@@ -684,7 +684,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews, then user okay):
 
 ---
 
-- [ ] 7. **TUI prompt with textualize (Block/Quarantine/Allow dialog)**
+- [x] 7. **TUI prompt with textualize (Block/Quarantine/Allow dialog)**
 
   **What to do**:
   - Implement `src/curlguard/tui.py` — `CurlGuardTUI` class extending `textual.app.App`:
@@ -775,7 +775,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews, then user okay):
 
 ---
 
-- [ ] 8. **Real curl binary manager (rename original, call with correct args)**
+- [x] 8. **Real curl binary manager (rename original, call with correct args)**
 
   **What to do**:
   - Implement `src/curlguard/curl_manager.py` — `CurlManager` class:
@@ -851,7 +851,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews, then user okay):
 
 ---
 
-- [ ] 9. **User rules directory watcher + loader**
+- [x] 9. **User rules directory watcher + loader**
 
   **What to do**:
   - Implement `src/curlguard/rules_watcher.py` — `RulesWatcher` class:
@@ -923,7 +923,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews, then user okay):
 
 ---
 
-- [ ] 10. **Auto-update engine (daily check, fetch, reload YARA)**
+- [x] 10. **Auto-update engine (daily check, fetch, reload YARA)**
 
   **What to do**:
   - Implement `src/curlguard/auto_updater.py` — `AutoUpdater` class:
@@ -997,7 +997,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews, then user okay):
 
 ---
 
-- [ ] 11. **Per-user installer (install-peruser.sh)**
+- [x] 11. **Per-user installer (install-peruser.sh)**
 
   **What to do**:
   - Implement `scripts/install-peruser.sh`:
