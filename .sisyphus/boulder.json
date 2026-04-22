@@ -1,0 +1,23 @@
+{
+  "active_plan": "/mnt/c/CSCE528/Project/.sisyphus/plans/curlguard.md",
+  "started_at": "2026-04-22T20:42:32.998Z",
+  "session_ids": [
+    "ses_24928e504ffeM1ec0zIgW9VFh0"
+  ],
+  "session_origins": {
+    "ses_24928e504ffeM1ec0zIgW9VFh0": "direct"
+  },
+  "plan_name": "curlguard",
+  "agent": "atlas",
+  "task_sessions": {
+    "todo:1": {
+      "task_key": "todo:1",
+      "task_label": "1",
+      "task_title": "**Project scaffold + pyproject.toml + dependencies**",
+      "session_id": "ses_24910c792ffeXWXfau95fOufif",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-04-22T20:43:45.430Z"
+    }
+  }
+}

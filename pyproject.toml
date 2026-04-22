@@ -1,0 +1,42 @@
+[project]
+name = "curlguard"
+version = "0.1.0"
+description = "Secure curl wrapper with YARA scanning - protects against malicious install scripts"
+requires-python = ">=3.10"
+dependencies = [
+    "yara-python>=4.3.0",
+    "textual>=0.50.0",
+    "requests>=2.31.0",
+    "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-mock>=3.12.0",
+    "ruff>=0.3.0",
+]
+
+[project.scripts]
+curlguard = "curlguard.cli:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v"
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
+ignore = ["E501"]
