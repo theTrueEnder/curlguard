@@ -58,8 +58,14 @@ def load_config() -> CurlGuardConfig:
         rules_dirs = default_rules
 
     # Create parent directories
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    quarantine_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        pass  # system-wide log dir may need sudo; will fail later if truly inaccessible
+    try:
+        quarantine_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        pass
 
     return CurlGuardConfig(
         mode=mode,

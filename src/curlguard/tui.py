@@ -2,7 +2,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Static, Button
 from textual.containers import Container, Vertical
 from textual.binding import Binding
-from textual import var
+from textual.reactive import reactive
 import sys
 
 
@@ -26,10 +26,10 @@ class CurlGuardTUI(App):
         Binding("ctrl+c", "exit", "Exit", show=False),
     ]
 
-    scan_result = var(None)
-    matched_rules = var([])
-    url = var("")
-    ssl_warn = var(False)
+    scan_result = reactive(None)
+    matched_rules = reactive([])
+    url = reactive("")
+    ssl_warn = reactive(False)
 
     def __init__(self, rules: list, url: str, ssl_warn: bool = False):
         super().__init__()

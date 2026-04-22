@@ -1076,7 +1076,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews, then user okay):
 
 ---
 
-- [ ] 12. **System-wide installer (install-systemwide.sh, sudo required)**
+- [x] 12. **System-wide installer (install-systemwide.sh, sudo required)**
 
   **What to do**:
   - Implement `scripts/install-systemwide.sh`:
@@ -1153,7 +1153,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews, then user okay):
 
 ---
 
-- [ ] 13. **Integration tests (pytest, real curlguard + real YARA rules)**
+- [x] 13. **Integration tests (pytest, real curlguard + real YARA rules)**
 
   **What to do**:
   - Implement `tests/test_integration.py`:
@@ -1234,7 +1234,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews, then user okay):
 
 ---
 
-- [ ] 14. **Example true positive test (download known malware sample, verify detection)**
+- [x] 14. **Example true positive test (download known malware sample, verify detection)**
 
   **What to do**:
   - Download a known malware sample from Malware Bazaar (or similar open malware repository) that matches our YARA rules
@@ -1310,7 +1310,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews, then user okay):
 
 ---
 
-- [ ] 15. **README + usage documentation**
+- [x] 15. **README + usage documentation**
 
   **What to do**:
   - Write `README.md`:

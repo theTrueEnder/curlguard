@@ -38,9 +38,20 @@ class CurlWrapper:
         # Handle based on scan result and user decision
         if not scan_result.clean:
             print(f"MALWARE DETECTED: {scan_result.rules_triggered}", file=sys.stderr)
-            # For now, block and exit
-            os.remove(temp_path)
-            return 1
+            from curlguard.tui import prompt_user
+            decision = prompt_user(scan_result, url, ssl_result.is_bypass)
+            if decision == "block":
+                os.remove(temp_path)
+                return 1
+            elif decision == "quarantine":
+                qdir = self._config.quarantine_dir
+                qdir.mkdir(parents=True, exist_ok=True)
+                import time
+                qpath = qdir / f"{int(time.time())}_{Path(temp_path).name}"
+                shutil.move(str(temp_path), str(qpath))
+                return 1
+            else:
+                pass  # allow - continue to deliver file
 
         # Clean - move to destination if specified
         if output_file:
