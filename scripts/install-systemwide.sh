@@ -2,6 +2,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SUDO=""
 if [ "$(id -u)" -ne 0 ]; then
     if command -v sudo > /dev/null 2>&1; then
@@ -20,8 +21,8 @@ $SUDO mkdir -p /var/lib/curlguard/rules
 $SUDO mkdir -p /var/lib/curlguard/quarantine
 $SUDO mkdir -p /var/log/curlguard
 
-if [ -d "$SCRIPT_DIR/src/curlguard/rules" ]; then
-    $SUDO cp -r "$SCRIPT_DIR/src/curlguard/rules/"*.yar /var/lib/curlguard/rules/ 2>/dev/null || true
+if [ -d "$PROJECT_DIR/src/curlguard/rules" ]; then
+    $SUDO cp -r "$PROJECT_DIR/src/curlguard/rules/"*.yar /var/lib/curlguard/rules/ 2>/dev/null || true
 fi
 
 echo "Installing dependencies..."
@@ -35,13 +36,13 @@ $SUDO pip install --break-system-packages 'textual>=0.50.0' 2>/dev/null || \
 $SUDO pip3 install --break-system-packages 'textual>=0.50.0' 2>/dev/null || \
 { echo "ERROR: Could not install textual. Try manually: sudo pip install --break-system-packages 'textual>=0.50.0'"; exit 1; }
 
-$SUDO pip install --break-system-packages -e "$SCRIPT_DIR" 2>/dev/null || \
-$SUDO pip3 install --break-system-packages -e "$SCRIPT_DIR" 2>/dev/null || \
-{ echo "ERROR: Could not install curlguard. Try manually: sudo pip install --break-system-packages -e $SCRIPT_DIR"; exit 1; }
+$SUDO pip install --break-system-packages -e "$PROJECT_DIR" 2>/dev/null || \
+$SUDO pip3 install --break-system-packages -e "$PROJECT_DIR" 2>/dev/null || \
+{ echo "ERROR: Could not install curlguard. Try manually: sudo pip install --break-system-packages -e $PROJECT_DIR"; exit 1; }
 
 $SUDO python3 -c "
 import sys
-sys.path.insert(0, '$SCRIPT_DIR/src')
+sys.path.insert(0, '$PROJECT_DIR/src')
 from curlguard.curl_manager import CurlManager
 CurlManager('system-wide').install()
 print('curl wrapper installed to /usr/bin/')
