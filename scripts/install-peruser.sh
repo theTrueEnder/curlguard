@@ -15,7 +15,10 @@ if [ -d "$SCRIPT_DIR/src/curlguard/rules" ]; then
     cp -r "$SCRIPT_DIR/src/curlguard/rules/"*.yar "$CURLGUARD_DIR/rules/" 2>/dev/null || true
 fi
 
-pip install -e "$SCRIPT_DIR" 2>/dev/null || pip3 install -e "$SCRIPT_DIR"
+pip install --user -e "$SCRIPT_DIR" 2>/dev/null || \
+pip install --user --break-system-packages -e "$SCRIPT_DIR" 2>/dev/null || \
+pip install --break-system-packages -e "$SCRIPT_DIR" 2>/dev/null || \
+{ echo "ERROR: Could not install curlguard package. Try: pip install --user --break-system-packages -e $SCRIPT_DIR"; exit 1; }
 
 python3 -c "
 import sys
@@ -25,31 +28,49 @@ CurlManager('per-user').install()
 print('curl wrapper installed to ~/.local/bin/')
 "
 
-if [ -n "\$BASH_VERSION" ]; then
-    if [ -f "\$HOME/.bashrc" ] && ! grep -q 'CURLGUARD_MODE' "\$HOME/.bashrc" 2>/dev/null; then
-        echo 'export CURLGUARD_MODE=per-user' >> "$HOME/.bashrc"
-        echo 'export PATH="\$HOME/.local/bin:\$PATH"' >> "$HOME/.bashrc"
+SHELL_RC=""
+if [ -n "$BASH_VERSION" ] && [ -f "$HOME/.bashrc" ]; then
+    SHELL_RC="$HOME/.bashrc"
+elif [ -n "$ZSH_VERSION" ] && [ -f "$HOME/.zshrc" ]; then
+    SHELL_RC="$HOME/.zshrc"
+elif [ -f "$HOME/.bashrc" ]; then
+    SHELL_RC="$HOME/.bashrc"
+elif [ -f "$HOME/.zshrc" ]; then
+    SHELL_RC="$HOME/.zshrc"
+fi
+
+if [ -n "$SHELL_RC" ]; then
+    if ! grep -q 'CURLGUARD_MODE' "$SHELL_RC" 2>/dev/null; then
+        echo '' >> "$SHELL_RC"
+        echo '# curlguard' >> "$SHELL_RC"
+        echo 'export CURLGUARD_MODE=per-user' >> "$SHELL_RC"
+        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_RC"
+        echo "Updated $SHELL_RC with CURLGUARD_MODE and PATH"
     fi
 fi
 
-if [ -n "\$ZSH_VERSION" ]; then
-    if [ -f "\$HOME/.zshrc" ] && ! grep -q 'CURLGUARD_MODE' "\$HOME/.zshrc" 2>/dev/null; then
-        echo 'export CURLGUARD_MODE=per-user' >> "$HOME/.zshrc"
-        echo 'export PATH="\$HOME/.local/bin:\$PATH"' >> "$HOME/.zshrc"
-    fi
-fi
-
-if [ -n "\$FISH_VERSION" ]; then
-    mkdir -p "\$HOME/.config/fish"
-    if ! grep -q 'CURLGUARD_MODE' "\$HOME/.config/fish/config.fish" 2>/dev/null; then
+if [ -n "$FISH_VERSION" ]; then
+    mkdir -p "$HOME/.config/fish"
+    if ! grep -q 'CURLGUARD_MODE' "$HOME/.config/fish/config.fish" 2>/dev/null; then
+        echo '' >> "$HOME/.config/fish/config.fish"
+        echo '# curlguard' >> "$HOME/.config/fish/config.fish"
         echo 'set -gx CURLGUARD_MODE per-user' >> "$HOME/.config/fish/config.fish"
         echo 'set -gx PATH $HOME/.local/bin $PATH' >> "$HOME/.config/fish/config.fish"
+        echo "Updated fish config with CURLGUARD_MODE and PATH"
     fi
 fi
 
-echo "=========================================="
-echo "curlguard per-user install complete!"
 echo ""
-echo "Restart your shell or run: source ~/.bashrc"
-echo "Verify: which curl  (should be ~/.local/bin/curl)"
-echo "=========================================="
+echo "  ██████╗ ███████╗███╗   ██╗██╗███████╗███████╗██╗      █████╗ ██████╗  ██████╗ ██╗   ██╗███████╗"
+echo "  ██████╗ ██╔════╝████╗  ██║██║██╔════╝██╔════╝██║     ██╔══██╗██╔══██╗██╔═══██╗██║   ██║██╔════╝"
+echo "  ██╔══██╗█████╗  ██╔██╗ ██║██║███████╗███████╗██║     ███████║██████╔╝██║   ██║██║   ██║█████╗  "
+echo "  ██║  ██║██╔══╝  ██║╚██╗██║██║╚════██║╚════██║██║     ██╔══██║██╔══██╗██║   ██║██║   ██║██╔══╝  "
+echo "  ██████╔╝███████╗██║ ╚████║██║███████║███████║███████╗██║  ██║██║  ██║╚██████╔╝╚██████╔╝██║     "
+echo "  ╚═════╝ ╚══════╝╚═╝  ╚═══╝╚═╝╚══════╝╚══════╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝     "
+echo ""
+echo "  Per-user install complete!"
+echo ""
+echo "  Restart your shell:  source ~/.bashrc  (or open a new terminal)"
+echo "  Verify install:      which curl  → should show ~/.local/bin/curl"
+echo "  Run curlguard:       curlguard --help"
+echo ""

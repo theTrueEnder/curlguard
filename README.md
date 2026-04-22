@@ -1,138 +1,236 @@
-# curlguard
+# ██████╗ ███████╗███╗   ██╗██╗███████╗███████╗██╗      █████╗ ██████╗  ██████╗ ██╗   ██╗███████╗
+# ██████╗ ██╔════╝████╗  ██║██║██╔════╝██╔════╝██║     ██╔══██╗██╔══██╗██╔═══██╗██║   ██║██╔════╝
+# ██╔══██╗█████╗  ██╔██╗ ██║██║███████╗███████╗██║     ███████║██████╔╝██║   ██║██║   ██║█████╗
+# ██║  ██║██╔══╝  ██║╚██╗██║██║╚════██║╚════██║██║     ██╔══██║██╔══██╗██║   ██║██║   ██║██╔══╝
+# ██████╔╝███████╗██║ ╚████║██║███████║███████║███████╗██║  ██║██║  ██║╚██████╔╝╚██████╔╝██║
+# ╚═════╝ ╚══════╝╚═╝  ╚═══╝╚═╝╚══════╝╚══════╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝
 
-**Secure curl wrapper with YARA malware scanning** — protects Linux users from supply chain attacks via `curl ... | bash`.
+**Secure curl wrapper with YARA malware scanning** — protects Linux from `curl ... | bash` supply chain attacks.
 
-## What it does
+---
 
-curlguard intercepts all curl downloads, scans file contents with YARA rules, and alerts you via an interactive TUI when malware is detected. Clean files pass through normally. You decide: Block, Quarantine, or Allow.
+## The Problem
 
-## Threat Model
-
-```
-Attack: `curl https://example.com/install.sh | bash`
-Problem: You have no way to inspect the script before execution
-Solution: curlguard scans it first with YARA rules
-```
-
-## Quick Start
-
-### Per-User Install
 ```bash
-bash scripts/install-peruser.sh
-source ~/.bashrc
+# You: "Let me just quickly install this tool..."
+curl https://example.com/install.sh | bash
+#                           ↑
+#             You just ran arbitrary code from the internet
+#             with zero inspection. What could go wrong?
 ```
 
-### System-Wide Install (requires sudo)
-```bash
-sudo bash scripts/install-systemwide.sh
-```
+Every day, thousands of users run `curl ... | bash` from unknown sources — npm packages, developer install scripts, "quick setup" commands. You're trusting that the server hasn't been compromised, the CDN isn't injecting malware, and the maintainer hasn't been bought.
 
-### Verify
-```bash
-curlguard --help
-which curl  # should show ~/.local/bin/curl or /usr/bin/curl
-```
+**curlguard scans the content first. You decide what happens next.**
+
+---
 
 ## How It Works
 
 ```
-curl https://example.com/script.sh | bash
-         ↓
-    curlguard (wrapper in PATH)
-         ↓
-    Real curl (curl.real) downloads file
-         ↓
-    YARA scanner checks file content
-         ↓
-    [CLEAN]  → file passes through, executes normally
-    [MALWARE] → TUI prompt: Block / Quarantine / Allow
-    [SSL BYPASS] → warning printed to stderr, download proceeds
+┌─────────────────────────────────────────────────────────────────────┐
+│                         curlguard flow                              │
+└─────────────────────────────────────────────────────────────────────┘
+
+  $ curl https://example.com/install.sh | bash
+              │
+              ▼
+    ┌──────────────────┐
+    │  curlguard wraps │
+    │   your curl cmd  │
+    └────────┬─────────┘
+             │
+             ▼
+    ┌──────────────────┐
+    │  Downloads via   │
+    │  real curl.real  │
+    └────────┬─────────┘
+             │
+             ▼
+    ┌──────────────────┐
+    │  YARA scanner    │◄──── foundation.yar (built-in)
+    │  checks content  │◄──── ~/.curlguard/rules/ (your rules)
+    │                  │◄──── auto-updated rules (daily)
+    └────────┬─────────┘
+             │
+       ┌─────┴─────┐
+       │  CLEAN    │     ┌────────────────┐
+       │           │     │  MALWARE       │
+       │ Pass thru │     │                │
+       │ silently  │     │ TUI prompt:    │
+       │           │     │ [B] Block      │
+       │           │     │ [Q] Quarantine │
+       │           │     │ [A] Allow      │
+       └───────────┘     └───────┬────────┘
+                                 │
+                       You decide what to do
 ```
 
-## YARA Rules
+---
 
-Rules are loaded from three sources (checked in order):
-1. Built-in rules: `src/curlguard/rules/foundation.yar`
-2. User rules: `~/.curlguard/rules/` (per-user) or `/var/lib/curlguard/rules/` (system-wide)
-3. Auto-updated rules: downloaded daily from configured URL
+## Quick Start
 
-### Adding Custom Rules
+**1. Download and install**
+
+*Per-user* (no sudo needed):
 ```bash
-cp my_custom_rule.yar ~/.curlguard/rules/
-curlguard ...  # rules reload automatically
+bash <(curl -s https://raw.githubusercontent.com/YOUR_USER/curlguard/main/scripts/install-peruser.sh)
+source ~/.bashrc
 ```
 
-## TUI Prompt
-
-When malware is detected, an interactive TUI appears:
-
-```
-╔══════════════════════════════════════════╗
-║ curlguard -- MALWARE DETECTED            ║
-║ URL: https://evil.com/payload.sh         ║
-║ Matched: suspicious_pipe_bash            ║
-║                                          ║
-║ [B] Block   [Q] Quarantine   [A] Allow   ║
-╚══════════════════════════════════════════╝
+*System-wide* (requires sudo):
+```bash
+sudo bash <(curl -s https://raw.githubusercontent.com/YOUR_USER/curlguard/main/scripts/install-systemwide.sh)
 ```
 
-- **Block**: abort download, exit code 1
-- **Quarantine**: move file to quarantine dir, exit 1
-- **Allow**: let the file pass through
+> **Note**: Requires Python 3.10+ and `yara-python`. On PEP 668 systems (Ubuntu 22.04+, Fedora 38+), the installer automatically uses `--break-system-packages`.
 
-Keyboard shortcuts: `B`, `Q`, `A`
+**2. Verify**
+```bash
+curlguard --help
+which curl        # should show ~/.local/bin/curl (per-user) or /usr/bin/curl (system-wide)
+```
+
+**3. Done.** Your `curl` is now protected.
+
+---
+
+## TUI: When Malware is Detected
+
+```
+╔══════════════════════════════════════════════════════════════════╗
+║                                                                  ║
+║     ██████╗ ███████╗███╗   ██╗██╗███████╗███████╗██╗      █████╗ ║
+║     ██╔══██╗██╔════╝████╗  ██║██║██╔════╝██╔════╝██║     ██╔══██╗║
+║     ██████╔╝█████╗  ██╔██╗ ██║██║███████╗███████╗██║     ███████║║
+║     ██╔══██╗██╔══╝  ██║╚██╗██║██║╚════██║╚════██║██║     ██╔══██║║
+║     ██████╔╝███████╗██║ ╚████║██║███████║███████║███████╗██║  ██║║
+║     ╚═════╝ ╚══════╝╚═╝  ╚═══╝╚═╝╚══════╝╚══════╝╚══════╝╚═╝  ╚═╝║
+║                                                                  ║
+║                     M A L W A R E   D E T E C T E D              ║
+║                                                                  ║
+║   URL:  https://evil.com/payload.sh                              ║
+║   Rule: suspicious_pipe_bash (severity: critical)                ║
+║                                                                  ║
+║   [B] Block this download    (ctrl+c)                            ║
+║   [Q] Quarantine & block     (moves to ~/.curlguard/quarantine/) ║
+║   [A] Allow anyway           (not recommended)                   ║
+║                                                                  ║
+╚══════════════════════════════════════════════════════════════════╝
+```
+
+- **Block** — abort, exit code 1
+- **Quarantine** — move to quarantine dir, exit 1
+- **Allow** — deliver the file, you're on your own
+
+---
 
 ## SSL Bypass Detection
 
 curlguard warns when you use insecure TLS:
 
-```bash
-curl -k https://example.com/file.sh  # prints WARNING: SSL bypass detected
+```
+$ curl -k https://example.com/file.sh
+WARNING: SSL bypass detected --insecure flag used. Connection is not encrypted.
 ```
 
-Blocked flags: `--insecure`, `-k`, `--sslv3`, `--tlsv1.0`, `--tlsv1.1`
+Blocked flags: `--insecure`, `-k`, `--sslv3`, `--tlsv1.0`, `--tlsv1.1`, and URLs starting with `http://` (not `https://`).
+
+---
+
+## YARA Rules
+
+Three sources, checked in order:
+
+| Priority | Source | Location |
+|----------|--------|----------|
+| 1 | Built-in | `src/curlguard/rules/foundation.yar` |
+| 2 | User rules | `~/.curlguard/rules/` (per-user) or `/var/lib/curlguard/rules/` (system-wide) |
+| 3 | Auto-update | Downloaded daily from `CURLGUARD_UPDATE_URL` |
+
+**Built-in rules detect:**
+
+| Rule | What it catches |
+|------|-----------------|
+| `suspicious_pipe_bash` | `curl ... \| bash` — the classic supply chain attack |
+| `base64_encoded_shell` | Base64-encoded payloads that decode and execute |
+| `obfuscated_download` | Eval/exec tricks to hide malicious activity |
+| `known_malware_header` | Scripts with malware/TROJAN comments or crypto pool IOCs |
+| `network_ioc` | Connections to known-bad TLDs or Tor exits |
+
+**Add your own rules:**
+```bash
+cp my_custom_rule.yar ~/.curlguard/rules/
+curlguard ...   # rules reload automatically
+```
+
+**Test detection locally:**
+```bash
+bash examples/true_positive/test_detection.sh
+```
+
+---
 
 ## Audit Logging
 
-Every curl invocation is logged:
+Every curl invocation is logged in JSON Lines format:
 
 ```json
-{"timestamp": "2024-01-01T12:00:00", "url": "https://example.com/file.sh", "scan_result": "clean", "duration_ms": 150.0, "exit_code": 0}
-{"timestamp": "2024-01-01T12:01:00", "url": "https://evil.com/payload.sh", "scan_result": "flagged", "rules_triggered": ["suspicious_pipe_bash"], "user_decision": "block"}
+{"timestamp":"2024-01-01T12:00:00","url":"https://example.com/file.sh","scan_result":"clean","duration_ms":150.0,"exit_code":0}
+{"timestamp":"2024-01-01T12:01:00","url":"https://evil.com/payload.sh","scan_result":"flagged","rules_triggered":["suspicious_pipe_bash"],"user_decision":"block"}
 ```
 
 Log locations:
-- Per-user: `~/.curlguard/audit.log`
-- System-wide: `/var/log/curlguard/audit.log`
+- **Per-user**: `~/.curlguard/audit.log`
+- **System-wide**: `/var/log/curlguard/audit.log`
+
+Logs rotate at 10MB (up to 5 backups), thread-safe, one event per line.
+
+---
 
 ## Configuration
 
-All settings via environment variables:
+All via environment variables:
 
 | Variable | Default | Description |
 |---|---|---|
 | `CURLGUARD_MODE` | auto-detect | `per-user` or `system-wide` |
-| `CURLGUARD_LOG_PATH` | auto | Path to audit log |
-| `CURLGUARD_RULES_DIR` | auto | Colon-separated rule directories |
+| `CURLGUARD_LOG_PATH` | auto | Audit log path |
+| `CURLGUARD_RULES_DIR` | auto | Colon-separated rule dirs |
 | `CURLGUARD_QUARANTINE` | auto | Quarantine directory |
-| `CURLGUARD_UPDATE_URL` | none | URL to fetch auto-update rules |
-| `CURLGUARD_UPDATE_INTERVAL_HOURS` | 24 | How often to check for rule updates |
-| `CURLGUARD_SSL_WARN_ONLY` | true | SSL bypass: `true`=warn only, `false`=block |
+| `CURLGUARD_UPDATE_URL` | none | Daily rule auto-update URL |
+| `CURLGUARD_UPDATE_INTERVAL_HOURS` | 24 | Auto-update frequency |
+| `CURLGUARD_SSL_WARN_ONLY` | `true` | SSL bypass: warn only (not block) |
+
+---
 
 ## Uninstall
 
-Per-user:
+**Per-user:**
 ```bash
 python3 -c "import sys; sys.path.insert(0,'src'); from curlguard.curl_manager import CurlManager; CurlManager('per-user').uninstall()"
 rm -rf ~/.curlguard ~/.local/bin/curl ~/.local/bin/curl.real
 ```
 
-System-wide:
+**System-wide:**
 ```bash
 sudo python3 -c "import sys; sys.path.insert(0,'src'); from curlguard.curl_manager import CurlManager; CurlManager('system-wide').uninstall()"
 sudo rm -rf /var/lib/curlguard /var/log/curlguard /etc/profile.d/curlguard.sh
-pip uninstall curlguard
+sudo pip uninstall curlguard
 ```
+
+---
+
+## Dependencies
+
+| Package | Why it's needed |
+|---------|----------------|
+| Python ≥ 3.10 | Runtime |
+| [yara-python](https://github.com/VirusTotal/yara-python) | YARA rule matching |
+| [textual](https://github.com/Textualize/textual) | Interactive TUI |
+| requests / httpx | Rule auto-update downloads |
+
+---
 
 ## Testing the Detection
 
@@ -142,11 +240,6 @@ A synthetic true-positive sample is included:
 bash examples/true_positive/test_detection.sh
 ```
 
-This should detect the `suspicious_pipe_bash` YARA rule.
+This creates a file that triggers the `suspicious_pipe_bash` rule and verifies detection.
 
-## Dependencies
-
-- Python >= 3.10
-- yara-python (for YARA rule matching)
-- textual (for the TUI prompt)
-- requests / httpx (for rule auto-update)
+> Without `yara-python` installed, the scanner gracefully falls back to `clean=True`. Install with: `pip install yara-python` (requires libyara-dev and C compiler).
