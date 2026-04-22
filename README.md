@@ -1,9 +1,13 @@
-# ██████╗ ███████╗███╗   ██╗██╗███████╗███████╗██╗      █████╗ ██████╗  ██████╗ ██╗   ██╗███████╗
-# ██████╗ ██╔════╝████╗  ██║██║██╔════╝██╔════╝██║     ██╔══██╗██╔══██╗██╔═══██╗██║   ██║██╔════╝
-# ██╔══██╗█████╗  ██╔██╗ ██║██║███████╗███████╗██║     ███████║██████╔╝██║   ██║██║   ██║█████╗
-# ██║  ██║██╔══╝  ██║╚██╗██║██║╚════██║╚════██║██║     ██╔══██║██╔══██╗██║   ██║██║   ██║██╔══╝
-# ██████╔╝███████╗██║ ╚████║██║███████║███████║███████╗██║  ██║██║  ██║╚██████╔╝╚██████╔╝██║
-# ╚═════╝ ╚══════╝╚═╝  ╚═══╝╚═╝╚══════╝╚══════╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝
+```
+ ██████╗██╗   ██╗██████╗ ██╗      ██████╗ ██╗   ██╗ █████╗ ██████╗ ██████╗ 
+██╔════╝██║   ██║██╔══██╗██║     ██╔════╝ ██║   ██║██╔══██╗██╔══██╗██╔══██╗
+██║     ██║   ██║██████╔╝██║     ██║  ███╗██║   ██║███████║██████╔╝██║  ██║
+██║     ██║   ██║██╔══██╗██║     ██║   ██║██║   ██║██╔══██║██╔══██╗██║  ██║
+╚██████╗╚██████╔╝██║  ██║███████╗╚██████╔╝╚██████╔╝██║  ██║██║  ██║██████╔╝
+ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ 
+```
+
+**Secure curl wrapper with YARA malware scanning**
 
 **Secure curl wrapper with YARA malware scanning** — protects Linux from `curl ... | bash` supply chain attacks.
 
@@ -170,7 +174,7 @@ curlguard ...   # rules reload automatically
 
 **Test detection locally:**
 ```bash
-bash examples/true_positive/test_detection.sh
+python3 examples/true_positive/start_server.py  # then: curl http://127.0.0.1:8888/test.sh | bash
 ```
 
 ---
@@ -238,12 +242,19 @@ sudo pip uninstall curlguard
 
 ## Testing the Detection
 
-A synthetic true-positive sample is included:
+A live test server lets you verify curlguard intercepts a real curl download:
 
+**Terminal 1** — start the test server:
 ```bash
-bash examples/true_positive/test_detection.sh
+python3 examples/true_positive/start_server.py
+```
+Server auto-expires after 60 seconds.
+
+**Terminal 2** — run a curl that curlguard intercepts:
+```bash
+curl http://127.0.0.1:8888/test.sh | bash
 ```
 
-This creates a file that triggers the `suspicious_pipe_bash` rule and verifies detection.
+curlguard will detect the `suspicious_pipe_bash` pattern and show the TUI prompt. This tests the full flow: curl intercept → content scan → TUI → user decision.
 
-> Without `yara-python` installed, the scanner gracefully falls back to `clean=True`. Install with: `pip install yara-python` (requires libyara-dev and C compiler).
+> Without `yara-python` installed, the scanner gracefully falls back to `clean=True`. Install with: `pip install --break-system-packages yara-python` (requires libyara-dev and a C compiler).
