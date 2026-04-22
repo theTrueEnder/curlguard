@@ -54,10 +54,9 @@ class YaraScanner:
         import yara
 
         # Merge all rule files and compile
-        # For duplicate rule names, we track and suffix
         self._rules = yara.compile(
             sources={
-                rf.read_text(): str(rf)
+                str(rf): rf.read_text()
                 for rf in rule_files
             }
         )

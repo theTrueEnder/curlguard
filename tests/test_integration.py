@@ -153,7 +153,7 @@ class TestCurlManager:
     def test_manager_per_user_paths(self):
         manager = CurlManager("per-user")
         assert ".local/bin" in str(manager._curl_path)
-        assert manager.is_installed() is False
+        assert ".local/bin/curl.real" in str(manager._curl_real)
 
     def test_manager_system_wide_paths(self):
         manager = CurlManager("system-wide")

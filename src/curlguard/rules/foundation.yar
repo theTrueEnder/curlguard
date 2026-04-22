@@ -9,7 +9,6 @@ rule base64_encoded_shell {
     severity = "high"
   strings:
     $b64_magic = /[A-Za-z0-9+\/]{50,}={0,2}/
-    $pipe_bash = /\|\s*bash/
     $decode_cmd = /(base64\s+-d|openssl\s+base64|-d\s+<<<)/i
   condition:
     $b64_magic and $decode_cmd
@@ -56,7 +55,7 @@ rule network_ioc {
     description = "Detects suspicious network indicators"
     severity = "medium"
   strings:
-    $ip_literal = /\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b/
+    $ip_literal = /[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/
     $suspicious_tld = /\.(ru|cn|tk|ml|ga|cf|gq)\// nocase
     $tor_redirect = /onion\// nocase
   condition:

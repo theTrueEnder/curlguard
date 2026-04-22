@@ -15,6 +15,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         prog="curlguard",
         description="Secure curl wrapper with YARA malware scanning",
+        epilog="""Test your install:
+  bash examples/true_positive/test_detection.sh   # true positive - should detect malware
+  curl -s http://127.0.0.1:8000/clean.sh | bash  # false positive test (start 'python3 -m http.server 8000' first)
+
+SSL bypass detection is always on. Logs go to ~/.curlguard/audit.log (per-user) or /var/log/curlguard/audit.log (system-wide).""",
     )
     parser.add_argument("--version", action="version", version=f"curlguard {__version__}")
     parser.add_argument("curl_args", nargs=argparse.REMAINDER, help="Arguments to pass to curl")
