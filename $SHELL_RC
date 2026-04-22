@@ -1,4 +1,0 @@
-
-# curlguard
-export CURLGUARD_MODE=per-user
-export PATH="\$HOME/.local/bin:\$PATH"
