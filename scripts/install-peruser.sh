@@ -74,22 +74,26 @@ if [ -n "$FISH_VERSION" ]; then
     fi
 fi
 
-echo ""
-echo "  ████ █  █ ████ █    █████ █  █  ██  ████ ████  "
-echo "  █    █  █ █  █ █    █     █  █ █  █ █  █ █  █ "
-echo "  █    █  █ ████ █    █  ██ █  █ █████ ████ █  █ "
-echo "  █    █  █ ███  █    █   █ █  █ █  █ ███  █  █ "
-echo "  ████ ████ █ █  ████ █████ ████ █  █ █ █  ████  "
-echo ""
-echo "  Per-user install complete!"
+cat <<'ART'
+  +++   ++      +++  +++++++  +++     +++  +++++++
+  + ++  +     +  ++     +    +  +    +  +     +
+  +  + ++     ++++      +    +++     +++      +
+  +   + +     +  +      +    +  +    +  +     +
+  +++   +++   +  +   ++++++  +++     +++      +
+ART
+
+  Per-user install complete!
 echo ""
 echo "  Restart your shell:  source ~/.bashrc  (or open a new terminal)"
 echo "  Verify install:      which curl  → should show ~/.local/bin/curl"
 echo "  Run curlguard:       curlguard --help"
 echo ""
 echo "  TEST MALWARE DETECTION (true positive):"
-echo "  bash examples/true_positive/test_detection.sh"
+echo "  Terminal 1: python3 examples/true_positive/start_server.py"
+echo "  Terminal 2: curl http://127.0.0.1:8888/test.sh | bash"
+echo "  curlguard will intercept, detect malware, and show the TUI."
+echo "  (server auto-expires after 60s)"
 echo ""
 echo "  TEST CLEAN SCRIPT (false positive):"
-echo "  curl -s http://127.0.0.1:8000/clean.sh | bash"
-echo "  (run 'python3 -m http.server 8000' in another terminal first)"
+echo "  python3 -m http.server 8888 --directory examples/true_positive"
+echo "  curl http://127.0.0.1:8888/start_server.py | bash  # clean content"
