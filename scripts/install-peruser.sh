@@ -15,6 +15,20 @@ if [ -d "$SCRIPT_DIR/src/curlguard/rules" ]; then
     cp -r "$SCRIPT_DIR/src/curlguard/rules/"*.yar "$CURLGUARD_DIR/rules/" 2>/dev/null || true
 fi
 
+echo "Installing dependencies..."
+
+if command -v apt-get > /dev/null 2>&1; then
+    echo "  Using apt for yara, requests, httpx..."
+    sudo apt-get install -y python3-yara python3-requests python3-httpx 2>/dev/null || \
+    apt-get install -y python3-yara python3-requests python3-httpx 2>/dev/null || \
+    { echo "  Warning: could not install python3-yara via apt, will try pip"; }
+fi
+
+echo "  Using pip for textual (system-managed)..."
+pip install --user --break-system-packages 'textual>=0.50.0' 2>/dev/null || \
+pip install --break-system-packages 'textual>=0.50.0' 2>/dev/null || \
+{ echo "ERROR: Could not install textual. Try: pip install --user --break-system-packages 'textual>=0.50.0'"; exit 1; }
+
 pip install --user -e "$SCRIPT_DIR" 2>/dev/null || \
 pip install --user --break-system-packages -e "$SCRIPT_DIR" 2>/dev/null || \
 pip install --break-system-packages -e "$SCRIPT_DIR" 2>/dev/null || \
@@ -29,33 +43,33 @@ print('curl wrapper installed to ~/.local/bin/')
 "
 
 SHELL_RC=""
-if [ -n "$BASH_VERSION" ] && [ -f "$HOME/.bashrc" ]; then
-    SHELL_RC="$HOME/.bashrc"
-elif [ -n "$ZSH_VERSION" ] && [ -f "$HOME/.zshrc" ]; then
-    SHELL_RC="$HOME/.zshrc"
-elif [ -f "$HOME/.bashrc" ]; then
-    SHELL_RC="$HOME/.bashrc"
-elif [ -f "$HOME/.zshrc" ]; then
-    SHELL_RC="$HOME/.zshrc"
+if [ -n "\$BASH_VERSION" ] && [ -f "\$HOME/.bashrc" ]; then
+    SHELL_RC="\$HOME/.bashrc"
+elif [ -n "\$ZSH_VERSION" ] && [ -f "\$HOME/.zshrc" ]; then
+    SHELL_RC="\$HOME/.zshrc"
+elif [ -f "\$HOME/.bashrc" ]; then
+    SHELL_RC="\$HOME/.bashrc"
+elif [ -f "\$HOME/.zshrc" ]; then
+    SHELL_RC="\$HOME/.zshrc"
 fi
 
-if [ -n "$SHELL_RC" ]; then
-    if ! grep -q 'CURLGUARD_MODE' "$SHELL_RC" 2>/dev/null; then
-        echo '' >> "$SHELL_RC"
-        echo '# curlguard' >> "$SHELL_RC"
-        echo 'export CURLGUARD_MODE=per-user' >> "$SHELL_RC"
-        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_RC"
-        echo "Updated $SHELL_RC with CURLGUARD_MODE and PATH"
+if [ -n "\$SHELL_RC" ]; then
+    if ! grep -q 'CURLGUARD_MODE' "\$SHELL_RC" 2>/dev/null; then
+        echo '' >> "\$SHELL_RC"
+        echo '# curlguard' >> "\$SHELL_RC"
+        echo 'export CURLGUARD_MODE=per-user' >> "\$SHELL_RC"
+        echo 'export PATH="\$HOME/.local/bin:\$PATH"' >> "\$SHELL_RC"
+        echo "Updated \$SHELL_RC with CURLGUARD_MODE and PATH"
     fi
 fi
 
-if [ -n "$FISH_VERSION" ]; then
-    mkdir -p "$HOME/.config/fish"
-    if ! grep -q 'CURLGUARD_MODE' "$HOME/.config/fish/config.fish" 2>/dev/null; then
-        echo '' >> "$HOME/.config/fish/config.fish"
-        echo '# curlguard' >> "$HOME/.config/fish/config.fish"
-        echo 'set -gx CURLGUARD_MODE per-user' >> "$HOME/.config/fish/config.fish"
-        echo 'set -gx PATH $HOME/.local/bin $PATH' >> "$HOME/.config/fish/config.fish"
+if [ -n "\$FISH_VERSION" ]; then
+    mkdir -p "\$HOME/.config/fish"
+    if ! grep -q 'CURLGUARD_MODE' "\$HOME/.config/fish/config.fish" 2>/dev/null; then
+        echo '' >> "\$HOME/.config/fish/config.fish"
+        echo '# curlguard' >> "\$HOME/.config/fish/config.fish"
+        echo 'set -gx CURLGUARD_MODE per-user' >> "\$HOME/.config/fish/config.fish"
+        echo 'set -gx PATH \$HOME/.local/bin \$PATH' >> "\$HOME/.config/fish/config.fish"
         echo "Updated fish config with CURLGUARD_MODE and PATH"
     fi
 fi

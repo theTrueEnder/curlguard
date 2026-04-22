@@ -74,16 +74,20 @@ Every day, thousands of users run `curl ... | bash` from unknown sources — npm
 
 *Per-user* (no sudo needed):
 ```bash
-bash <(curl -s https://raw.githubusercontent.com/YOUR_USER/curlguard/main/scripts/install-peruser.sh)
+git clone https://github.com/YOUR_USER/curlguard.git
+cd curlguard
+bash scripts/install-peruser.sh
 source ~/.bashrc
 ```
 
 *System-wide* (requires sudo):
 ```bash
-sudo bash <(curl -s https://raw.githubusercontent.com/YOUR_USER/curlguard/main/scripts/install-systemwide.sh)
+git clone https://github.com/YOUR_USER/curlguard.git
+cd curlguard
+sudo bash scripts/install-systemwide.sh
 ```
 
-> **Note**: Requires Python 3.10+ and `yara-python`. On PEP 668 systems (Ubuntu 22.04+, Fedora 38+), the installer automatically uses `--break-system-packages`.
+The installer uses `apt` for `python3-yara`, `python3-requests`, and `python3-httpx` (system-managed, no PEP 668 issues) and `pip` for `textual` (needs modern version not in apt).
 
 **2. Verify**
 ```bash

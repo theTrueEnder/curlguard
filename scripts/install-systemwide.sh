@@ -24,8 +24,19 @@ if [ -d "$SCRIPT_DIR/src/curlguard/rules" ]; then
     $SUDO cp -r "$SCRIPT_DIR/src/curlguard/rules/"*.yar /var/lib/curlguard/rules/ 2>/dev/null || true
 fi
 
-$SUDO pip install -e "$SCRIPT_DIR" --break-system-packages 2>/dev/null || \
-$SUDO pip3 install -e "$SCRIPT_DIR" --break-system-packages 2>/dev/null || \
+echo "Installing dependencies..."
+
+echo "  Using apt for yara, requests, httpx..."
+$SUDO apt-get install -y python3-yara python3-requests python3-httpx 2>/dev/null || \
+{ echo "  Warning: could not install python3-yara via apt, will try pip"; }
+
+echo "  Using pip for textual (system-managed)..."
+$SUDO pip install --break-system-packages 'textual>=0.50.0' 2>/dev/null || \
+$SUDO pip3 install --break-system-packages 'textual>=0.50.0' 2>/dev/null || \
+{ echo "ERROR: Could not install textual. Try manually: sudo pip install --break-system-packages 'textual>=0.50.0'"; exit 1; }
+
+$SUDO pip install --break-system-packages -e "$SCRIPT_DIR" 2>/dev/null || \
+$SUDO pip3 install --break-system-packages -e "$SCRIPT_DIR" 2>/dev/null || \
 { echo "ERROR: Could not install curlguard. Try manually: sudo pip install --break-system-packages -e $SCRIPT_DIR"; exit 1; }
 
 $SUDO python3 -c "
