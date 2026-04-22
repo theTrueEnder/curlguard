@@ -66,12 +66,16 @@ class CurlManager:
         if not self._curl_real.exists():
             return
 
-        # Remove wrapper
+        system_curl = Path("/usr/bin/curl")
+        if self._mode == "per-user" and not system_curl.exists():
+            shutil.copy2(str(self._curl_real), str(system_curl))
+        else:
+            if system_curl.exists():
+                system_curl.unlink()
+            shutil.move(str(self._curl_real), str(system_curl))
+
         if self._curl_path.exists():
             self._curl_path.unlink()
-
-        # Restore original
-        shutil.move(str(self._curl_real), str(self._curl_path))
 
     def call_real_curl(self, args: list[str], env: dict | None = None) -> subprocess.CompletedProcess:
         return subprocess.run(

@@ -21,10 +21,13 @@ class CurlGuardConfig:
 
 
 def _detect_mode() -> Literal["per-user", "system-wide"]:
-    argv0 = sys.argv[0] if sys.argv else ""
-    if ".local/bin/" in argv0 or str(Path.home()) in argv0:
+    home_bin_real = Path.home() / ".local/bin" / "curl.real"
+    system_bin_real = Path("/usr/bin/curl.real")
+    if home_bin_real.exists():
         return "per-user"
-    return "system-wide"
+    if system_bin_real.exists():
+        return "system-wide"
+    return os.environ.get("CURLGUARD_MODE", "system-wide")
 
 
 def _detect_real_curl(mode: Literal["per-user", "system-wide"]) -> Path:
