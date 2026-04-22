@@ -1,6 +1,7 @@
 """Curl binary manager module for curlguard."""
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 
@@ -46,10 +47,9 @@ class CurlManager:
         # Restore original
         shutil.move(str(self._curl_real), str(self._curl_path))
 
-    def call_real_curl(self, args: list[str], env: dict) -> subprocess.CompletedProcess:
-        import subprocess
+    def call_real_curl(self, args: list[str], env: dict | None = None) -> subprocess.CompletedProcess:
         return subprocess.run(
             [str(self._curl_real)] + args,
-            env={**os.environ, **env},
+            env={**os.environ, **(env or {})},
             capture_output=True,
         )

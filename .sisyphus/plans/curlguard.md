@@ -172,7 +172,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews, then user okay):
 
 ## TODOs
 
-- [ ] 1. **Project scaffold + pyproject.toml + dependencies**
+- [x] 1. **Project scaffold + pyproject.toml + dependencies**
 
   **What to do**:
   - Create `src/curlguard/__init__.py` — package init with version
@@ -267,7 +267,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews, then user okay):
 
 ---
 
-- [ ] 2. **Core YARA scanner module**
+- [x] 2. **Core YARA scanner module**
 
   **What to do**:
   - Implement `src/curlguard/scanner.py` — `YaraScanner` class with:
@@ -364,7 +364,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews, then user okay):
 
 ---
 
-- [ ] 3. **Config loader (paths, settings, env var overrides)**
+- [x] 3. **Config loader (paths, settings, env var overrides)**
 
   **What to do**:
   - Implement `src/curlguard/config.py` — `CurlGuardConfig` dataclass with fields:
@@ -444,7 +444,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews, then user okay):
 
 ---
 
-- [ ] 4. **Audit logger module (JSON log format, rotation)**
+- [x] 4. **Audit logger module (JSON log format, rotation)**
 
   **What to do**:
   - Implement `src/curlguard/logger.py` — `AuditLogger` class:
@@ -523,7 +523,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews, then user okay):
 
 ---
 
-- [ ] 5. **SSL bypass detector (flag parsing, URL inspection)**
+- [x] 5. **SSL bypass detector (flag parsing, URL inspection)**
 
   **What to do**:
   - Implement `src/curlguard/ssl_detector.py` — `SslBypassDetector` class:
@@ -599,7 +599,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews, then user okay):
 
 ---
 
-- [ ] 6. **Binary wrapper dispatcher (PATH resolution, pass-through, subprocess)**
+- [x] 6. **Binary wrapper dispatcher (PATH resolution, pass-through, subprocess)**
 
   **What to do**:
   - Implement `src/curlguard/wrapper.py` — `CurlWrapper` class:

@@ -11,8 +11,8 @@ class CurlGuardConfig:
     mode: Literal["per-user", "system-wide"]
     log_path: Path
     rules_dirs: list[Path] = field(default_factory=list)
-    quarantine_dir: Path = field(default_factory=Path.home() / ".curlguard" / "quarantine")
-    real_curl_path: Path = field(default_factory=Path("/usr/bin/curl.real"))
+    quarantine_dir: Path = field(default_factory=lambda: Path.home() / ".curlguard" / "quarantine")
+    real_curl_path: Path = field(default_factory=lambda: Path("/usr/bin/curl.real"))
     update_url: Optional[str] = None
     update_interval_hours: int = 24
     ssl_warn_only: bool = True
