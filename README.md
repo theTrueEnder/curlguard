@@ -139,7 +139,7 @@ pip uninstall curlguard
 A synthetic true-positive sample is included:
 
 ```bash
-bash examples/known_malware/test_detection.sh
+bash examples/true_positive/test_detection.sh
 ```
 
 This should detect the `suspicious_pipe_bash` YARA rule.

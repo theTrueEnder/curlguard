@@ -24,7 +24,7 @@ fi
 
 $SUDO pip install . 2>/dev/null || $SUDO pip3 install . 2>/dev/null
 
-python3 -c "
+$SUDO python3 -c "
 import sys
 sys.path.insert(0, '$SCRIPT_DIR/src')
 from curlguard.curl_manager import CurlManager
