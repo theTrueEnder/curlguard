@@ -1,11 +1,14 @@
 """Binary wrapper dispatcher module for curlguard."""
+import shutil
 import subprocess
 import sys
-from pathlib import Path
-from typing import Iterator, Optional
 import tempfile
-import shutil
-import os
+import time
+from collections.abc import Iterator
+from datetime import datetime, timezone
+from pathlib import Path
+
+from curlguard.logger import AuditEvent
 
 
 class CurlWrapper:
@@ -16,92 +19,309 @@ class CurlWrapper:
         self._ssl_detector = ssl_detector
 
     def dispatch(self, args: list[str]) -> int:
-        # Find URL and output destination
-        url = self._extract_url(args)
-        if not url:
-            # No URL found, just pass through to real curl
-            return self._call_real_curl(args)
+        started = time.perf_counter()
+        urls = self._extract_urls(args)
+        url = urls[0] if len(urls) == 1 else ""
+        destination = self._extract_output(args)
 
-        output_file = self._extract_output(args)
+        if not self._should_intercept(args, urls):
+            exit_code = self._call_real_curl(args)
+            self._log_event(
+                url=url,
+                destination=destination,
+                scan_result="skipped",
+                rules_triggered=[],
+                user_decision=None,
+                ssl_bypass_detected=False,
+                duration_ms=self._elapsed_ms(started),
+                exit_code=exit_code,
+            )
+            return exit_code
 
-        # Check SSL bypass
         ssl_result = self._ssl_detector.detect(args, url)
         if ssl_result.is_bypass:
             print(f"WARNING: {ssl_result.message}", file=sys.stderr)
-
-        # Download to temp
-        temp_path, actual_url = self._download_to_temp(args, url)
-
-        # Scan
-        scan_result = self._scanner.scan_file(temp_path)
-
-        # Handle based on scan result and user decision
-        if not scan_result.clean:
-            print(f"MALWARE DETECTED: {scan_result.rules_triggered}", file=sys.stderr)
-            from curlguard.tui import prompt_user
-            decision = prompt_user(scan_result, url, ssl_result.is_bypass)
-            if decision == "block":
-                os.remove(temp_path)
+            if ssl_result.severity == "block" and not self._config.ssl_warn_only:
+                self._log_event(
+                    url=url,
+                    destination=destination,
+                    scan_result="skipped",
+                    rules_triggered=[],
+                    user_decision="block",
+                    ssl_bypass_detected=True,
+                    duration_ms=self._elapsed_ms(started),
+                    exit_code=1,
+                )
                 return 1
-            elif decision == "quarantine":
-                qdir = self._config.quarantine_dir
-                qdir.mkdir(parents=True, exist_ok=True)
-                import time
-                qpath = qdir / f"{int(time.time())}_{Path(temp_path).name}"
-                shutil.move(str(temp_path), str(qpath))
-                return 1
-            else:
-                pass  # allow - continue to deliver file
 
-        # Clean - move to destination if specified
-        if output_file:
-            shutil.move(str(temp_path), output_file)
-        else:
-            # Print to stdout
-            with open(temp_path, "rb") as f:
-                shutil.copyfileobj(f, sys.stdout.buffer)
-            os.remove(temp_path)
+        temp_path = None
+        try:
+            temp_path = self._download_to_temp(args)
+            scan_result = self._scanner.scan_file(temp_path)
 
-        return 0
+            if scan_result.status in {"unavailable", "error"}:
+                return self._handle_scan_failure(
+                    started=started,
+                    temp_path=temp_path,
+                    url=url,
+                    destination=destination,
+                    scan_result=scan_result,
+                    ssl_bypass_detected=ssl_result.is_bypass,
+                )
 
-    def _extract_url(self, args: list[str]) -> Optional[str]:
-        for arg in args:
-            if arg.startswith(("http://", "https://", "ftp://", "sftp://")):
-                return arg
-        return None
+            if not scan_result.clean:
+                print(f"MALWARE DETECTED: {scan_result.rules_triggered}", file=sys.stderr)
+                from curlguard.tui import prompt_user
 
-    def _extract_output(self, args: list[str]) -> Optional[str]:
+                decision = prompt_user(scan_result, url, ssl_result.is_bypass)
+                if decision == "block":
+                    self._safe_unlink(temp_path)
+                    self._log_event(
+                        url=url,
+                        destination=destination,
+                        scan_result="flagged",
+                        rules_triggered=scan_result.rules_triggered,
+                        user_decision="block",
+                        ssl_bypass_detected=ssl_result.is_bypass,
+                        duration_ms=self._elapsed_ms(started),
+                        exit_code=1,
+                    )
+                    return 1
+                if decision == "quarantine":
+                    self._quarantine_file(temp_path)
+                    self._log_event(
+                        url=url,
+                        destination=destination,
+                        scan_result="flagged",
+                        rules_triggered=scan_result.rules_triggered,
+                        user_decision="quarantine",
+                        ssl_bypass_detected=ssl_result.is_bypass,
+                        duration_ms=self._elapsed_ms(started),
+                        exit_code=1,
+                    )
+                    return 1
+
+                self._deliver_file(temp_path, destination)
+                self._log_event(
+                    url=url,
+                    destination=destination,
+                    scan_result="flagged",
+                    rules_triggered=scan_result.rules_triggered,
+                    user_decision="allow",
+                    ssl_bypass_detected=ssl_result.is_bypass,
+                    duration_ms=self._elapsed_ms(started),
+                    exit_code=0,
+                )
+                return 0
+
+            self._deliver_file(temp_path, destination)
+            self._log_event(
+                url=url,
+                destination=destination,
+                scan_result="clean",
+                rules_triggered=[],
+                user_decision=None,
+                ssl_bypass_detected=ssl_result.is_bypass,
+                duration_ms=self._elapsed_ms(started),
+                exit_code=0,
+            )
+            return 0
+        except subprocess.CalledProcessError as exc:
+            if exc.stderr:
+                sys.stderr.buffer.write(exc.stderr)
+            self._log_event(
+                url=url,
+                destination=destination,
+                scan_result="error",
+                rules_triggered=[],
+                user_decision=None,
+                ssl_bypass_detected=ssl_result.is_bypass,
+                duration_ms=self._elapsed_ms(started),
+                exit_code=exc.returncode,
+            )
+            return exc.returncode
+        finally:
+            if temp_path and temp_path.exists():
+                self._safe_unlink(temp_path)
+
+    def _extract_url(self, args: list[str]) -> str | None:
+        urls = self._extract_urls(args)
+        if not urls:
+            return None
+        return urls[0]
+
+    def _extract_urls(self, args: list[str]) -> list[str]:
+        return [
+            arg for arg in args
+            if arg.startswith(("http://", "https://", "ftp://", "sftp://"))
+        ]
+
+    def _extract_output(self, args: list[str]) -> str | None:
         for i, arg in enumerate(args):
             if arg in ("-o", "--output"):
                 if i + 1 < len(args):
-                    return args[i + 1]
+                    return None if args[i + 1] == "-" else args[i + 1]
             elif arg.startswith("-o") and len(arg) > 2:
-                return arg[2:]
+                value = arg[2:]
+                return None if value == "-" else value
             elif arg.startswith("--output="):
-                return arg[9:]
+                value = arg[9:]
+                return None if value == "-" else value
         return None
 
-    def _download_to_temp(self, args: list[str], url: str) -> tuple[Path, str]:
-        # Build real curl args
-        real_args = [str(self._config.real_curl_path), "-o", "{temp}"] + args
-        temp = Path(tempfile.mktemp(suffix=".download"))
+    def _should_intercept(self, args: list[str], urls: list[str]) -> bool:
+        if len(urls) != 1:
+            return False
 
-        cmd = [str(self._config.real_curl_path), "-L"]
+        unsupported_flags = {
+            "-I",
+            "--head",
+            "-T",
+            "--upload-file",
+            "-F",
+            "--form",
+            "-d",
+            "--data",
+            "--data-raw",
+            "--data-binary",
+            "--data-urlencode",
+            "--next",
+            "-O",
+            "--remote-name",
+            "-J",
+            "--remote-header-name",
+        }
+        return not any(arg in unsupported_flags for arg in args)
+
+    def _download_to_temp(self, args: list[str]) -> Path:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".download") as handle:
+            temp_path = Path(handle.name)
+
+        cmd = [str(self._config.real_curl_path), *self._sanitize_args(args), "--output", str(temp_path)]
+        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if result.returncode != 0:
+            self._safe_unlink(temp_path)
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                cmd,
+                stderr=result.stderr,
+            )
+        return temp_path
+
+    def _sanitize_args(self, args: list[str]) -> list[str]:
+        sanitized: list[str] = []
+        skip_next = False
         for arg in args:
-            if arg.startswith("-o") and len(arg) > 2:
-                cmd.extend(["-o", temp])
-            elif arg == "-o" or arg == "--output":
-                continue  # skip, we handle output
-            else:
-                cmd.append(arg)
-
-        result = subprocess.run(cmd, capture_output=True)
-        return temp, url
+            if skip_next:
+                skip_next = False
+                continue
+            if arg in {"-o", "--output"}:
+                skip_next = True
+                continue
+            if arg.startswith("--output="):
+                continue
+            if arg.startswith("-o") and arg != "-o":
+                continue
+            sanitized.append(arg)
+        return sanitized
 
     def _call_real_curl(self, args: list[str]) -> int:
         cmd = [str(self._config.real_curl_path)] + args
         result = subprocess.run(cmd)
         return result.returncode
+
+    def _handle_scan_failure(
+        self,
+        *,
+        started: float,
+        temp_path: Path,
+        url: str,
+        destination: str | None,
+        scan_result,
+        ssl_bypass_detected: bool,
+    ) -> int:
+        warning = (
+            f"WARNING: curlguard scan {scan_result.status}: {scan_result.error or 'unknown error'}"
+        )
+        if self._config.scan_failure_mode == "block":
+            print(f"{warning}. Blocking download.", file=sys.stderr)
+            self._safe_unlink(temp_path)
+            self._log_event(
+                url=url,
+                destination=destination,
+                scan_result=scan_result.status,
+                rules_triggered=[],
+                user_decision="block",
+                ssl_bypass_detected=ssl_bypass_detected,
+                duration_ms=self._elapsed_ms(started),
+                exit_code=1,
+            )
+            return 1
+
+        print(f"{warning}. Delivering content due to configured warn mode.", file=sys.stderr)
+        self._deliver_file(temp_path, destination)
+        self._log_event(
+            url=url,
+            destination=destination,
+            scan_result=scan_result.status,
+            rules_triggered=[],
+            user_decision="allow",
+            ssl_bypass_detected=ssl_bypass_detected,
+            duration_ms=self._elapsed_ms(started),
+            exit_code=0,
+        )
+        return 0
+
+    def _deliver_file(self, temp_path: Path, output_file: str | None) -> None:
+        if output_file:
+            shutil.move(str(temp_path), output_file)
+            return
+
+        with temp_path.open("rb") as handle:
+            shutil.copyfileobj(handle, sys.stdout.buffer)
+        self._safe_unlink(temp_path)
+
+    def _quarantine_file(self, temp_path: Path) -> Path:
+        qdir = self._config.quarantine_dir
+        qdir.mkdir(parents=True, exist_ok=True)
+        qpath = qdir / f"{int(time.time())}_{temp_path.name}"
+        shutil.move(str(temp_path), str(qpath))
+        return qpath
+
+    def _log_event(
+        self,
+        *,
+        url: str,
+        destination: str | None,
+        scan_result: str,
+        rules_triggered: list[str],
+        user_decision: str | None,
+        ssl_bypass_detected: bool,
+        duration_ms: float,
+        exit_code: int,
+    ) -> None:
+        self._logger.log(
+            AuditEvent(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                url=url,
+                destination=destination,
+                scan_result=scan_result,
+                rules_triggered=rules_triggered,
+                user_decision=user_decision,
+                ssl_bypass_detected=ssl_bypass_detected,
+                duration_ms=duration_ms,
+                exit_code=exit_code,
+            )
+        )
+
+    def _elapsed_ms(self, started: float) -> float:
+        return (time.perf_counter() - started) * 1000
+
+    def _safe_unlink(self, path: Path) -> None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def stream_scan(self, args: list[str]) -> Iterator[bytes]:
         cmd = [str(self._config.real_curl_path)] + args

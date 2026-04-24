@@ -1,12 +1,12 @@
 """CLI entry point for curlguard."""
 import argparse
 import sys
-from pathlib import Path
 
 from curlguard import __version__
+from curlguard.auto_updater import AutoUpdater
 from curlguard.config import load_config
+from curlguard.logger import AuditLogger
 from curlguard.scanner import YaraScanner
-from curlguard.logger import AuditLogger, AuditEvent
 from curlguard.ssl_detector import SslBypassDetector
 from curlguard.wrapper import CurlWrapper
 
@@ -33,6 +33,7 @@ or /var/log/curlguard/audit.log (system-wide).""",
 
     config = load_config()
     scanner = YaraScanner(config.rules_dirs)
+    AutoUpdater(config, scanner).check_and_update()
     logger = AuditLogger(config.log_path)
     ssl_detector = SslBypassDetector()
     wrapper = CurlWrapper(config, scanner, logger, ssl_detector)

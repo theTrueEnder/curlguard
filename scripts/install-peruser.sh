@@ -12,7 +12,7 @@ python3 --version > /dev/null 2>&1 || { echo "Python 3 required but not found"; 
 mkdir -p "$CURLGUARD_DIR/rules"
 mkdir -p "$CURLGUARD_DIR/quarantine"
 
-if [ -d "$SCRIPT_DIR/src/curlguard/rules" ]; then
+if [ -d "$PROJECT_DIR/src/curlguard/rules" ]; then
     cp -r "$PROJECT_DIR/src/curlguard/rules/"*.yar "$CURLGUARD_DIR/rules/" 2>/dev/null || true
 fi
 

@@ -1,8 +1,8 @@
 """YARA scanner module for curlguard."""
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
-import time
+from typing import Literal
 
 
 @dataclass
@@ -11,6 +11,8 @@ class ScanResult:
     matches: list
     rules_triggered: list
     scan_time_ms: float
+    status: Literal["clean", "flagged", "unavailable", "error"] = "clean"
+    error: str | None = None
 
 
 class YaraScanner:
@@ -19,9 +21,13 @@ class YaraScanner:
         self._rules = None
         self._rules_count = 0
         self._yara_available = False
+        self._load_error: str | None = None
         self._load_rules()
 
     def _load_rules(self) -> None:
+        self._rules = None
+        self._rules_count = 0
+        self._load_error = None
         try:
             import yara
 
@@ -49,6 +55,10 @@ class YaraScanner:
         except ImportError:
             # yara not installed - fall back to no scanning
             self._yara_available = False
+            self._load_error = "yara-python is not installed"
+        except Exception as exc:
+            self._yara_available = True
+            self._load_error = str(exc)
 
     def _compile_rules(self, rule_files: list[Path]) -> None:
         import yara
@@ -56,7 +66,7 @@ class YaraScanner:
         # Merge all rule files and compile
         self._rules = yara.compile(
             sources={
-                str(rf): rf.read_text()
+                str(rf): rf.read_text(encoding="utf-8")
                 for rf in rule_files
             }
         )
@@ -64,9 +74,27 @@ class YaraScanner:
 
     def scan(self, data: bytes) -> ScanResult:
         start = time.perf_counter()
-        if not self._yara_available or self._rules is None:
+        if not self._yara_available:
             elapsed = (time.perf_counter() - start) * 1000
-            return ScanResult(clean=True, matches=[], rules_triggered=[], scan_time_ms=elapsed)
+            return ScanResult(
+                clean=True,
+                matches=[],
+                rules_triggered=[],
+                scan_time_ms=elapsed,
+                status="unavailable",
+                error=self._load_error or "yara-python is not installed",
+            )
+
+        if self._rules is None:
+            elapsed = (time.perf_counter() - start) * 1000
+            return ScanResult(
+                clean=True,
+                matches=[],
+                rules_triggered=[],
+                scan_time_ms=elapsed,
+                status="unavailable",
+                error=self._load_error or "no YARA rules could be loaded",
+            )
 
         try:
             matches = self._rules.match(data=data)
@@ -77,10 +105,18 @@ class YaraScanner:
                 matches=[str(m) for m in matches],
                 rules_triggered=rules_triggered,
                 scan_time_ms=elapsed,
+                status="flagged" if matches else "clean",
             )
-        except Exception:
+        except Exception as exc:
             elapsed = (time.perf_counter() - start) * 1000
-            return ScanResult(clean=True, matches=[], rules_triggered=[], scan_time_ms=elapsed)
+            return ScanResult(
+                clean=True,
+                matches=[],
+                rules_triggered=[],
+                scan_time_ms=elapsed,
+                status="error",
+                error=str(exc),
+            )
 
     def scan_file(self, path: str | Path) -> ScanResult:
         path = Path(path)

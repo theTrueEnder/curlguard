@@ -1,9 +1,10 @@
 """Configuration module for curlguard."""
+import os
+import shutil
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Optional
-import os
-import sys
+from typing import Literal
 
 
 @dataclass
@@ -12,10 +13,11 @@ class CurlGuardConfig:
     log_path: Path
     rules_dirs: list[Path] = field(default_factory=list)
     quarantine_dir: Path = field(default_factory=lambda: Path.home() / ".curlguard" / "quarantine")
-    real_curl_path: Path = field(default_factory=lambda: Path("/usr/bin/curl.real"))
-    update_url: Optional[str] = None
+    real_curl_path: Path = field(default_factory=lambda: Path("/usr/bin/curl"))
+    update_url: str | None = None
     update_interval_hours: int = 24
     ssl_warn_only: bool = True
+    scan_failure_mode: Literal["warn", "block"] = "warn"
 
 
 def _detect_mode() -> Literal["per-user", "system-wide"]:
@@ -23,6 +25,30 @@ def _detect_mode() -> Literal["per-user", "system-wide"]:
     if ".local/bin/" in argv0 or str(Path.home()) in argv0:
         return "per-user"
     return "system-wide"
+
+
+def _detect_real_curl(mode: Literal["per-user", "system-wide"]) -> Path:
+    candidates: list[Path] = []
+    if mode == "system-wide":
+        candidates.append(Path("/usr/bin/curl.real"))
+
+    candidates.extend(
+        [
+            Path("/usr/bin/curl"),
+            Path("/usr/local/bin/curl"),
+            Path("/bin/curl"),
+        ]
+    )
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    discovered = shutil.which("curl", path="/usr/bin:/usr/local/bin:/bin")
+    if discovered:
+        return Path(discovered)
+
+    return Path("/usr/bin/curl.real" if mode == "system-wide" else "/usr/bin/curl")
 
 
 def load_config() -> CurlGuardConfig:
@@ -36,12 +62,11 @@ def load_config() -> CurlGuardConfig:
         default_log = base / "audit.log"
         default_rules = [base / "rules"]
         default_quarantine = base / "quarantine"
-        default_real_curl = home / ".local/bin/curl.real"
     else:
         default_log = Path("/var/log/curlguard/audit.log")
         default_rules = [Path("/var/lib/curlguard/rules")]
         default_quarantine = Path("/var/lib/curlguard/quarantine")
-        default_real_curl = Path("/usr/bin/curl.real")
+    default_real_curl = _detect_real_curl(mode)
 
     # Env var overrides
     log_path = Path(os.environ.get("CURLGUARD_LOG_PATH", str(default_log)))
@@ -50,6 +75,9 @@ def load_config() -> CurlGuardConfig:
     update_url = os.environ.get("CURLGUARD_UPDATE_URL")
     update_interval = int(os.environ.get("CURLGUARD_UPDATE_INTERVAL_HOURS", "24"))
     ssl_warn_only = os.environ.get("CURLGUARD_SSL_WARN_ONLY", "true").lower() != "false"
+    scan_failure_mode = os.environ.get("CURLGUARD_SCAN_FAILURE_MODE", "warn").lower()
+    if scan_failure_mode not in {"warn", "block"}:
+        scan_failure_mode = "warn"
 
     rules_env = os.environ.get("CURLGUARD_RULES_DIR", "")
     if rules_env:
@@ -76,4 +104,5 @@ def load_config() -> CurlGuardConfig:
         update_url=update_url,
         update_interval_hours=update_interval,
         ssl_warn_only=ssl_warn_only,
+        scan_failure_mode=scan_failure_mode,
     )

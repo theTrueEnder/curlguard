@@ -1,19 +1,18 @@
 """Audit logger module for curlguard."""
-from dataclasses import dataclass, field, asdict
-from pathlib import Path
-from typing import Optional
 import json
 import threading
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 
 @dataclass
 class AuditEvent:
     timestamp: str
     url: str
-    destination: Optional[str]
-    scan_result: str  # "clean" | "flagged" | "error"
+    destination: str | None
+    scan_result: str  # "clean" | "flagged" | "unavailable" | "error" | "skipped"
     rules_triggered: list = field(default_factory=list)
-    user_decision: Optional[str] = None  # "block" | "quarantine" | "allow" | None
+    user_decision: str | None = None  # "block" | "quarantine" | "allow" | None
     ssl_bypass_detected: bool = False
     duration_ms: float = 0.0
     exit_code: int = 0

