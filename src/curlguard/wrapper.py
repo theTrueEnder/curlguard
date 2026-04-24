@@ -1,4 +1,5 @@
 """Binary wrapper dispatcher module for curlguard."""
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -70,7 +71,14 @@ class CurlWrapper:
                 )
 
             if not scan_result.clean:
-                print(f"MALWARE DETECTED: {scan_result.rules_triggered}", file=sys.stderr)
+                print(
+                    "curlguard: suspicious content detected; opening interactive review prompt.",
+                    file=sys.stderr,
+                )
+                print(
+                    f"curlguard: matched rules: {', '.join(scan_result.rules_triggered)}",
+                    file=sys.stderr,
+                )
                 from curlguard.tui import prompt_user
 
                 decision = prompt_user(scan_result, url, ssl_result.is_bypass)
@@ -101,7 +109,13 @@ class CurlWrapper:
                     )
                     return 1
 
-                self._deliver_file(temp_path, destination)
+                delivery_target, metadata = self._deliver_file(temp_path, destination)
+                self._print_delivery_summary(
+                    delivery_target=delivery_target,
+                    metadata=metadata,
+                    scan_result="flagged",
+                    user_decision="allow",
+                )
                 self._log_event(
                     url=url,
                     destination=destination,
@@ -114,7 +128,13 @@ class CurlWrapper:
                 )
                 return 0
 
-            self._deliver_file(temp_path, destination)
+            delivery_target, metadata = self._deliver_file(temp_path, destination)
+            self._print_delivery_summary(
+                delivery_target=delivery_target,
+                metadata=metadata,
+                scan_result="clean",
+                user_decision=None,
+            )
             self._log_event(
                 url=url,
                 destination=destination,
@@ -259,7 +279,13 @@ class CurlWrapper:
             return 1
 
         print(f"{warning}. Delivering content due to configured warn mode.", file=sys.stderr)
-        self._deliver_file(temp_path, destination)
+        delivery_target, metadata = self._deliver_file(temp_path, destination)
+        self._print_delivery_summary(
+            delivery_target=delivery_target,
+            metadata=metadata,
+            scan_result=scan_result.status,
+            user_decision="allow",
+        )
         self._log_event(
             url=url,
             destination=destination,
@@ -272,14 +298,42 @@ class CurlWrapper:
         )
         return 0
 
-    def _deliver_file(self, temp_path: Path, output_file: str | None) -> None:
+    def _deliver_file(self, temp_path: Path, output_file: str | None) -> tuple[str, str]:
+        metadata = self._format_file_metadata(temp_path)
         if output_file:
             shutil.move(str(temp_path), output_file)
-            return
+            return f"saved to {output_file}", metadata
 
         with temp_path.open("rb") as handle:
             shutil.copyfileobj(handle, sys.stdout.buffer)
         self._safe_unlink(temp_path)
+        return "written to stdout", metadata
+
+    def _print_delivery_summary(
+        self,
+        *,
+        delivery_target: str,
+        metadata: str,
+        scan_result: str,
+        user_decision: str | None,
+    ) -> None:
+        if scan_result == "clean":
+            print(
+                f"curlguard: download verified, {delivery_target} ({metadata}).",
+                file=sys.stderr,
+            )
+            return
+        if user_decision == "allow":
+            print(
+                f"curlguard: flagged content was allowed by user decision and {delivery_target} ({metadata}).",
+                file=sys.stderr,
+            )
+
+    def _format_file_metadata(self, path: Path) -> str:
+        payload = path.read_bytes()
+        checksum = hashlib.sha256(payload).hexdigest()
+        size = len(payload)
+        return f"{size} bytes, sha256={checksum}"
 
     def _quarantine_file(self, temp_path: Path) -> Path:
         qdir = self._config.quarantine_dir

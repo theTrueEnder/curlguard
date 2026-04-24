@@ -14,14 +14,32 @@ from curlguard.wrapper import CurlWrapper
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="curlguard",
-        description="Secure curl wrapper with YARA malware scanning",
-        epilog="""Test your install:
-  Terminal 1: python3 examples/true_positive/start_server.py
-  Terminal 2: curl http://127.0.0.1:8888/test.sh | bash
-  (server auto-expires after 60s; malware triggers TUI prompt)
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Linux-first curl safety wrapper.\n"
+            "Downloads supported single-URL requests with the real curl, scans the content,\n"
+            "and prompts before delivery when suspicious patterns are detected."
+        ),
+        epilog="""Examples:
+  curlguard https://example.com/install.sh
+  curlguard -fsSL https://example.com/install.sh -o install.sh
+  curlguard --version
 
-SSL bypass detection is always on. Logs: ~/.curlguard/audit.log (per-user)
-or /var/log/curlguard/audit.log (system-wide).""",
+Best-supported flows:
+  - single-URL downloads
+  - installer-style commands such as: curl ... | bash
+  - explicit output files with -o / --output
+
+Pass-through behavior:
+  Requests outside the supported interception path are delegated to the real curl.
+
+Testing:
+  python3 examples/true_positive/start_server.py
+  curl http://127.0.0.1:8888/test.sh | bash
+
+Logs:
+  Per-user:    ~/.curlguard/audit.log
+  System-wide: /var/log/curlguard/audit.log""",
     )
     parser.add_argument("--version", action="version", version=f"curlguard {__version__}")
     parser.add_argument("curl_args", nargs=argparse.REMAINDER, help="Arguments to pass to curl")

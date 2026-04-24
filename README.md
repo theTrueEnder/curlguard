@@ -1,35 +1,51 @@
 # curlguard
 
-`curlguard` is a Linux-focused safety wrapper for `curl` that scans downloaded content before it reaches `bash`, a file on disk, or another consumer.
+`curlguard` is a Linux-first safety wrapper for `curl` that puts a scan-and-review step in front of risky installer commands.
 
-It is built for the habit a lot of us have picked up:
+Instead of streaming remote content directly into `bash`, `curlguard` downloads supported requests with the real system `curl`, scans the payload with YARA rules, warns on insecure transport, and lets you decide what to do when content looks suspicious.
+
+## Why it exists
+
+Commands like this are convenient:
 
 ```bash
-curl https://somewhere/install.sh | bash
+curl -fsSL https://example.com/install.sh | bash
 ```
 
-That command is convenient, but it also means “download remote code and execute it immediately.” `curlguard` inserts a review point into that flow:
+They are also a natural target for watering-hole and supply-chain attacks:
 
-- download with the real system `curl`
-- scan the content with YARA rules
-- warn about insecure TLS usage
-- prompt you when content looks suspicious
-- log what happened for later review
+- a trusted install script is replaced at the source
+- a CDN or redirect target serves a poisoned payload
+- an upstream compromise turns a previously safe one-liner into remote code execution
+- insecure TLS options weaken the fetch path
 
-## What it does today
+`curlguard` is designed to reduce that risk by inserting a review point before delivery.
 
-- Intercepts the common single-URL installer flow on Linux
-- Downloads to a temporary file first, then scans before delivery
-- Supports built-in, user-supplied, and auto-updated YARA rule sources
-- Shows a Textual prompt for flagged content: block, quarantine, or allow
-- Writes JSON Lines audit logs for intercepted and pass-through invocations
-- Lets you choose how scan failures behave: warn-and-deliver or fail closed
+## What the tool does today
 
-## What it does not do yet
+- intercepts supported single-URL download flows
+- downloads to a temporary file before delivery
+- scans content with built-in, user, and auto-updated YARA rules
+- warns on insecure transport and downgraded TLS options
+- opens an interactive terminal review prompt for flagged content
+- logs activity to JSON Lines audit logs
+- supports configurable behavior when scanning is unavailable
 
-`curlguard` currently prioritizes installer-style commands over perfect parity with every `curl` feature.
+## Current scope
 
-The wrapper intentionally falls back to the real `curl` for requests it does not safely intercept yet, including flows that use flags like:
+Best-supported path:
+
+- Linux
+- single-URL downloads
+- installer-style commands
+- `curl ... | bash`
+- `curl ... -o file`
+
+Requests outside that path are passed through to the real `curl`.
+
+### Known pass-through cases
+
+The wrapper currently defers to the real `curl` for flows such as:
 
 - `-I`, `--head`
 - `-T`, `--upload-file`
@@ -40,62 +56,55 @@ The wrapper intentionally falls back to the real `curl` for requests it does not
 - `-J`, `--remote-header-name`
 - multi-URL invocations
 
-That means the sweet spot right now is:
-
-```bash
-curl -fsSL https://example.com/install.sh | bash
-curl -fsSL https://example.com/install.sh -o install.sh
-```
-
-## Why use it
-
-`curlguard` is meant to reduce risk around watering-hole and supply-chain style attacks where:
-
-- an install script is replaced on the origin server
-- a CDN or redirect target serves malicious content
-- a trusted project briefly ships a poisoned installer
-- a “quick install” command uses insecure transport or weakened TLS settings
-
-It does **not** guarantee a script is safe. It gives you a scanning and decision point before the content is delivered.
-
-## How the flow works
+## How it works
 
 ```text
 curl command
-   │
-   ├─ unsupported curl mode? ──> pass through to real curl, log as skipped
-   │
-   └─ supported single-URL mode
-         │
-         ├─ detect insecure TLS flags / http:// usage
-         │
-         ├─ download with the real system curl to a temp file
-         │
-         ├─ scan with YARA
-         │     ├─ clean        -> deliver
-         │     ├─ flagged      -> prompt block / quarantine / allow
-         │     └─ unavailable  -> warn or block based on config
-         │
-         └─ write audit log entry
+   |
+   +-- unsupported request shape?
+   |      |
+   |      +-- pass through to the real curl
+   |      +-- write audit log entry with scan_result=skipped
+   |
+   +-- supported single-URL request
+          |
+          +-- detect insecure transport / TLS settings
+          +-- download with the real curl to a temp file
+          +-- scan with YARA
+                 |
+                 +-- clean        -> deliver
+                 +-- flagged      -> interactive review prompt
+                 +-- unavailable  -> warn or block, depending on policy
+                 +-- error        -> warn or block, depending on policy
 ```
 
-## Quick start
+## Interactive review
+
+When suspicious content is detected, `curlguard` opens an interactive terminal prompt and offers three actions:
+
+- `Block`
+- `Quarantine`
+- `Allow`
+
+If no interactive terminal is available, `curlguard` blocks the download instead of hanging.
+
+## Installation
 
 ### Per-user install
 
 ```bash
-git clone https://github.com/YOUR_USER/curlguard.git
+git clone https://github.com/thetrueender/curlguard.git
 cd curlguard
 bash scripts/install-peruser.sh
 source ~/.bashrc
 ```
 
-This creates a wrapper at `~/.local/bin/curl` and points it at the real system `curl`.
+This installs the wrapper at `~/.local/bin/curl` and keeps the real system `curl` in place.
 
 ### System-wide install
 
 ```bash
-git clone https://github.com/YOUR_USER/curlguard.git
+git clone https://github.com/thetrueender/curlguard.git
 cd curlguard
 sudo bash scripts/install-systemwide.sh
 ```
@@ -105,18 +114,18 @@ This replaces `/usr/bin/curl` with the wrapper and stores the original binary as
 ### Verify
 
 ```bash
-curlguard --help
 which curl
+curlguard --help
 ```
 
-Expected results:
+Expected result:
 
 - per-user install: `~/.local/bin/curl`
 - system-wide install: `/usr/bin/curl`
 
 ## Dependencies
 
-The project currently expects:
+`curlguard` currently expects:
 
 - Python 3.10+
 - `yara-python`
@@ -126,9 +135,7 @@ The project currently expects:
 
 The install scripts try to use distro packages for `python3-yara`, `python3-requests`, and `python3-httpx`, and `pip` for `textual`.
 
-## Detection behavior
-
-### Built-in rule sources
+## Detection sources
 
 Rules are loaded from these locations, in this order:
 
@@ -136,38 +143,17 @@ Rules are loaded from these locations, in this order:
 2. user rules in `~/.curlguard/rules/` or `/var/lib/curlguard/rules/`
 3. auto-updated rules fetched from `CURLGUARD_UPDATE_URL`
 
-### Built-in detection themes
+The built-in rules currently look for patterns such as:
 
-The default rules look for patterns such as:
-
-- `suspicious_pipe_bash`
+- suspicious `curl ... | bash`
 - base64-decoded shell payloads
 - obfuscated shell execution
-- malware-style headers and crypto pool indicators
-- network IOCs
+- malware-style headers and cryptominer indicators
+- suspicious network IOCs
 
-### If malware is detected
+## TLS and transport checks
 
-For flagged content, `curlguard` opens a TUI prompt and lets you:
-
-- `Block` — abort delivery and exit non-zero
-- `Quarantine` — move the payload into the quarantine directory and exit non-zero
-- `Allow` — deliver the content anyway
-
-### If scanning is unavailable
-
-This now has an explicit policy:
-
-- default: warn and deliver
-- optional: block the download
-
-Control it with `CURLGUARD_SCAN_FAILURE_MODE`.
-
-## TLS / transport warnings
-
-`curlguard` checks for insecure transport and downgraded TLS usage.
-
-Examples it detects:
+`curlguard` currently detects and warns on transport issues such as:
 
 - `--insecure`
 - `-k`
@@ -176,17 +162,33 @@ Examples it detects:
 - `--tlsv1.1`
 - `http://...` URLs
 
-By default, SSL bypass findings warn. You can configure blocking for `severity=block` cases by setting:
+Blocking can be enabled for blocking-severity cases with:
 
 ```bash
 export CURLGUARD_SSL_WARN_ONLY=false
 ```
 
+## Scan failure policy
+
+If scanning is unavailable or errors out, `curlguard` can either:
+
+- warn and deliver
+- block the download
+
+Control this with:
+
+```bash
+export CURLGUARD_SCAN_FAILURE_MODE=warn
+export CURLGUARD_SCAN_FAILURE_MODE=block
+```
+
+The default is `warn`.
+
 ## Audit logging
 
-Every invocation handled by the wrapper is logged as JSON Lines.
+Every invocation handled by the wrapper is written as JSON Lines.
 
-Default log paths:
+Default log locations:
 
 - per-user: `~/.curlguard/audit.log`
 - system-wide: `/var/log/curlguard/audit.log`
@@ -199,7 +201,7 @@ Example entries:
 {"timestamp":"2024-01-01T12:02:00+00:00","url":"https://example.com/install.sh","scan_result":"unavailable","user_decision":"allow","exit_code":0}
 ```
 
-Possible `scan_result` values currently include:
+Current `scan_result` values include:
 
 - `clean`
 - `flagged`
@@ -209,7 +211,7 @@ Possible `scan_result` values currently include:
 
 ## Configuration
 
-All current runtime configuration is environment-variable based.
+All runtime configuration is currently environment-variable based.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -220,37 +222,58 @@ All current runtime configuration is environment-variable based.
 | `CURLGUARD_REAL_CURL_PATH` | auto-detect | Override the real curl binary path |
 | `CURLGUARD_UPDATE_URL` | unset | URL used for auto-updated rules |
 | `CURLGUARD_UPDATE_INTERVAL_HOURS` | `24` | Rule update interval |
-| `CURLGUARD_SSL_WARN_ONLY` | `true` | Warn on TLS bypass unless a blocking severity is configured and this is `false` |
+| `CURLGUARD_SSL_WARN_ONLY` | `true` | Warn on TLS bypass unless a blocking-severity case is configured and this is `false` |
 | `CURLGUARD_SCAN_FAILURE_MODE` | `warn` | `warn` to deliver with warning, `block` to fail closed when scanning is unavailable |
 
 ## Testing
 
-### True positive
+### True positive: end-to-end prompt flow
 
-The repo includes a synthetic malicious sample:
+Start the synthetic suspicious sample server:
 
 ```bash
 python3 examples/true_positive/start_server.py
+```
+
+In another terminal:
+
+```bash
 curl http://127.0.0.1:8888/test.sh | bash
 ```
 
-There is also a direct sample file at `examples/known_malware/sample.sh`.
+Expected behavior:
 
-### True negative
+- `curlguard` reports suspicious content
+- an interactive review prompt opens
+- choosing `Block` or `Quarantine` prevents the script from reaching `bash`
 
-A simple benign shell installer should scan clean. One example:
+### True negative: clean content should pass
+
+Start the clean sample server:
 
 ```bash
-python3 - <<'PY'
-from pathlib import Path
-import sys
-sys.path.insert(0, "src")
-from curlguard.scanner import YaraScanner
+python3 examples/true_negative/start_server.py
+```
 
-scanner = YaraScanner([Path("src/curlguard/rules")])
-result = scanner.scan(b"#!/bin/sh\necho safe install\ncurl https://example.com/file.txt -o /tmp/file.txt\n")
-print(result.clean, result.status, result.rules_triggered)
-PY
+In another terminal:
+
+```bash
+curl http://127.0.0.1:8889/install.sh -o /tmp/curlguard-demo.sh
+```
+
+Expected behavior:
+
+- the file downloads without opening the review prompt
+- no suspicious rules are triggered
+
+### Scanner-only sample
+
+The repository includes a synthetic suspicious sample at `examples/known_malware/sample.sh`.
+
+You can validate it directly with:
+
+```bash
+bash examples/known_malware/test_detection.sh
 ```
 
 ### Automated tests
@@ -259,14 +282,15 @@ PY
 pytest -v
 ```
 
-The integration tests cover:
+The automated suite currently covers:
 
 - true positives
 - true negatives
 - scan-unavailable behavior
 - quarantine flow
-- SSL-blocking behavior
-- wrapper temp-file download handling
+- SSL blocking behavior
+- temp-file download handling
+- TUI decision-path behavior
 
 ## Uninstall
 
@@ -285,15 +309,14 @@ sudo rm -rf /var/lib/curlguard /var/log/curlguard /etc/profile.d/curlguard.sh
 sudo pip uninstall curlguard
 ```
 
-## Current status
+## Status
 
-The repository is in a much better place than before, but it is still a focused early-stage tool, not a drop-in replacement for every `curl` workflow.
+`curlguard` is functional for its primary Linux installer-defense path, but it is still an early-stage security tool rather than a drop-in replacement for every `curl` workflow.
 
-Today’s strongest path is:
+If you are evaluating or extending it, start with:
 
 - Linux
 - single-URL downloads
 - installer-style commands
 - YARA-backed pre-delivery scanning
-
-If you are evaluating or extending it, that is the path to test first.
+- the included true-positive and true-negative example servers

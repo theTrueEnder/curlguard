@@ -1,84 +1,108 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-SUDO=""
-if [ "$(id -u)" -ne 0 ]; then
-    if command -v sudo > /dev/null 2>&1; then
-        SUDO="sudo"
-    else
-        echo "ERROR: curlguard system-wide install requires root."
-        echo "       Run with sudo:  sudo bash $0"
-        echo "       Or use per-user install instead."
-        exit 1
-    fi
+
+step() {
+    printf '\n[%s] %s\n' "$1" "$2"
+}
+
+info() {
+    printf '  - %s\n' "$1"
+}
+
+warn() {
+    printf 'WARNING: %s\n' "$1" >&2
+}
+
+die() {
+    printf 'ERROR: %s\n' "$1" >&2
+    exit 1
+}
+
+if [ "$(id -u)" -eq 0 ]; then
+    SUDO=""
+elif command -v sudo >/dev/null 2>&1; then
+    SUDO="sudo"
+else
+    die "System-wide installation requires root or sudo."
 fi
 
-echo "Installing curlguard (system-wide)..."
+command -v python3 >/dev/null 2>&1 || die "Python 3 is required."
 
-$SUDO mkdir -p /var/lib/curlguard/rules
-$SUDO mkdir -p /var/lib/curlguard/quarantine
-$SUDO mkdir -p /var/log/curlguard
-
+step "1/5" "Preparing system directories"
+$SUDO mkdir -p /var/lib/curlguard/rules /var/lib/curlguard/quarantine /var/log/curlguard
 if [ -d "$PROJECT_DIR/src/curlguard/rules" ]; then
-    $SUDO cp -r "$PROJECT_DIR/src/curlguard/rules/"*.yar /var/lib/curlguard/rules/ 2>/dev/null || true
+    $SUDO cp "$PROJECT_DIR"/src/curlguard/rules/*.yar /var/lib/curlguard/rules/ 2>/dev/null || true
+fi
+info "Rules directory: /var/lib/curlguard/rules"
+info "Quarantine directory: /var/lib/curlguard/quarantine"
+info "Audit log directory: /var/log/curlguard"
+
+step "2/5" "Installing Python dependencies"
+if command -v apt-get >/dev/null 2>&1; then
+    info "Attempting distro packages for yara-python, requests, and httpx"
+    $SUDO apt-get install -y python3-yara python3-requests python3-httpx 2>/dev/null || \
+        warn "Could not install python3-yara/python3-requests/python3-httpx with apt-get."
+else
+    warn "apt-get not found; continuing without distro dependency installation."
 fi
 
-echo "Installing dependencies..."
+info "Installing Textual via pip"
+$SUDO python3 -m pip install --break-system-packages 'textual>=0.50.0' 2>/dev/null || \
+    $SUDO python3 -m pip install 'textual>=0.50.0' 2>/dev/null || \
+    die "Could not install Textual. Try: sudo python3 -m pip install --break-system-packages 'textual>=0.50.0'"
 
-echo "  Using apt for yara, requests, httpx..."
-$SUDO apt-get install -y python3-yara python3-requests python3-httpx 2>/dev/null || \
-{ echo "  Warning: could not install python3-yara via apt, will try pip"; }
+step "3/5" "Installing the curlguard package"
+$SUDO python3 -m pip install --break-system-packages -e "$PROJECT_DIR" 2>/dev/null || \
+    $SUDO python3 -m pip install -e "$PROJECT_DIR" 2>/dev/null || \
+    die "Could not install curlguard. Try: sudo python3 -m pip install --break-system-packages -e '$PROJECT_DIR'"
 
-echo "  Using pip for textual (system-managed)..."
-$SUDO pip install --break-system-packages 'textual>=0.50.0' 2>/dev/null || \
-$SUDO pip3 install --break-system-packages 'textual>=0.50.0' 2>/dev/null || \
-{ echo "ERROR: Could not install textual. Try manually: sudo pip install --break-system-packages 'textual>=0.50.0'"; exit 1; }
-
-$SUDO pip install --break-system-packages -e "$PROJECT_DIR" 2>/dev/null || \
-$SUDO pip3 install --break-system-packages -e "$PROJECT_DIR" 2>/dev/null || \
-{ echo "ERROR: Could not install curlguard. Try manually: sudo pip install --break-system-packages -e $PROJECT_DIR"; exit 1; }
-
+step "4/5" "Installing the curl wrapper"
 $SUDO python3 -c "
 import sys
 sys.path.insert(0, '$PROJECT_DIR/src')
 from curlguard.curl_manager import CurlManager
 CurlManager('system-wide').install()
-print('curl wrapper installed to /usr/bin/')
+print('Installed wrapper at /usr/bin/curl')
 "
 
+step "5/5" "Writing environment configuration"
 PROFILE_FILE="/etc/profile.d/curlguard.sh"
 if [ ! -f "$PROFILE_FILE" ]; then
-    $SUDO tee "$PROFILE_FILE" > /dev/null << 'PROFILE'
+    $SUDO tee "$PROFILE_FILE" > /dev/null <<'PROFILE'
 export CURLGUARD_MODE=system-wide
 PROFILE
-    echo "Created $PROFILE_FILE"
+    info "Created $PROFILE_FILE"
+else
+    info "$PROFILE_FILE already exists"
 fi
 
-cat <<'ART'
-  +++   ++      +++  +++++++  +++     +++  +++++++
-  + ++  +     +  ++     +    +  +    +  +     +
-  +  + ++     ++++      +    +++     +++      +
-  +   + +     +  +      +    +  +    +  +     +
-  +++   +++   +  +   ++++++  +++     +++      +
-ART
+cat <<EOF
 
-  System-wide install complete!
-echo ""
-echo "  Audit log:   /var/log/curlguard/audit.log"
-echo "  Rules dir:   /var/lib/curlguard/rules/"
-echo "  Quarantine:  /var/lib/curlguard/quarantine/"
-echo ""
-echo "  Verify:      which curl  → should show /usr/bin/curl"
-echo "  Run:         curlguard --help"
-echo ""
-echo "  TEST MALWARE DETECTION (true positive):"
-echo "  Terminal 1: python3 examples/true_positive/start_server.py"
-echo "  Terminal 2: curl http://127.0.0.1:8888/test.sh | bash"
-echo "  curlguard will intercept, detect malware, and show the TUI."
-echo "  (server auto-expires after 60s)"
-echo ""
-echo "  TEST CLEAN SCRIPT (false positive):"
-echo "  python3 -m http.server 8888 --directory examples/true_positive"
-echo "  curl http://127.0.0.1:8888/start_server.py | bash  # clean content"
+curlguard system-wide installation complete.
+
+Runtime locations:
+  - Audit log:   /var/log/curlguard/audit.log
+  - Rules:       /var/lib/curlguard/rules
+  - Quarantine:  /var/lib/curlguard/quarantine
+
+Next steps:
+  1. Start a new shell or run:
+       source /etc/profile
+  2. Verify that the wrapper is active:
+       which curl
+       curlguard --help
+
+Recommended checks:
+  - Suspicious sample:
+      python3 examples/true_positive/start_server.py
+      curl http://127.0.0.1:8888/test.sh | bash
+    Expected result: curlguard opens an interactive review prompt.
+
+  - Clean sample:
+      python3 examples/true_negative/start_server.py
+      curl http://127.0.0.1:8889/install.sh -o /tmp/curlguard-demo.sh
+    Expected result: the file downloads without a malware prompt.
+EOF
