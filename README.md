@@ -123,6 +123,74 @@ Expected result:
 - per-user install: `~/.local/bin/curl`
 - system-wide install: `/usr/bin/curl`
 
+
+## Testing
+
+### True positive: end-to-end prompt flow
+
+Start the synthetic suspicious sample server:
+
+```bash
+python3 examples/true_positive/start_server.py
+```
+
+In another terminal:
+
+```bash
+curl http://127.0.0.1:8888/test.sh | bash
+```
+
+Expected behavior:
+
+- `curlguard` reports suspicious content
+- an interactive review prompt opens
+- choosing `Block` or `Quarantine` prevents the script from reaching `bash`
+
+### True negative: clean content should pass
+
+Start the clean sample server:
+
+```bash
+python3 examples/true_negative/start_server.py
+```
+
+In another terminal:
+
+```bash
+curl http://127.0.0.1:8889/install.sh -o /tmp/curlguard-demo.sh
+```
+
+Expected behavior:
+
+- the file downloads without opening the review prompt
+- no suspicious rules are triggered
+
+### Scanner-only sample
+
+The repository includes a synthetic suspicious sample at `examples/known_malware/sample.sh`.
+
+You can validate it directly with:
+
+```bash
+bash examples/known_malware/test_detection.sh
+```
+
+### Automated tests
+
+```bash
+pytest -v
+```
+
+The automated suite currently covers:
+
+- true positives
+- true negatives
+- scan-unavailable behavior
+- quarantine flow
+- SSL blocking behavior
+- temp-file download handling
+- TUI decision-path behavior
+
 ## Dependencies
 
 `curlguard` currently expects:
@@ -224,73 +292,6 @@ All runtime configuration is currently environment-variable based.
 | `CURLGUARD_UPDATE_INTERVAL_HOURS` | `24` | Rule update interval |
 | `CURLGUARD_SSL_WARN_ONLY` | `true` | Warn on TLS bypass unless a blocking-severity case is configured and this is `false` |
 | `CURLGUARD_SCAN_FAILURE_MODE` | `warn` | `warn` to deliver with warning, `block` to fail closed when scanning is unavailable |
-
-## Testing
-
-### True positive: end-to-end prompt flow
-
-Start the synthetic suspicious sample server:
-
-```bash
-python3 examples/true_positive/start_server.py
-```
-
-In another terminal:
-
-```bash
-curl http://127.0.0.1:8888/test.sh | bash
-```
-
-Expected behavior:
-
-- `curlguard` reports suspicious content
-- an interactive review prompt opens
-- choosing `Block` or `Quarantine` prevents the script from reaching `bash`
-
-### True negative: clean content should pass
-
-Start the clean sample server:
-
-```bash
-python3 examples/true_negative/start_server.py
-```
-
-In another terminal:
-
-```bash
-curl http://127.0.0.1:8889/install.sh -o /tmp/curlguard-demo.sh
-```
-
-Expected behavior:
-
-- the file downloads without opening the review prompt
-- no suspicious rules are triggered
-
-### Scanner-only sample
-
-The repository includes a synthetic suspicious sample at `examples/known_malware/sample.sh`.
-
-You can validate it directly with:
-
-```bash
-bash examples/known_malware/test_detection.sh
-```
-
-### Automated tests
-
-```bash
-pytest -v
-```
-
-The automated suite currently covers:
-
-- true positives
-- true negatives
-- scan-unavailable behavior
-- quarantine flow
-- SSL blocking behavior
-- temp-file download handling
-- TUI decision-path behavior
 
 ## Uninstall
 
