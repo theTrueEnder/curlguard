@@ -8,6 +8,7 @@ import time
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from curlguard.logger import AuditEvent
 
@@ -23,7 +24,25 @@ class CurlWrapper:
         started = time.perf_counter()
         urls = self._extract_urls(args)
         url = urls[0] if len(urls) == 1 else ""
-        destination = self._extract_output(args)
+        destination = self._extract_output(args, url)
+
+        if len(urls) > 1:
+            print(
+                "curlguard: multiple URLs in one curl command are not supported; "
+                "run one URL per command so each response can be scanned",
+                file=sys.stderr,
+            )
+            self._log_event(
+                url=url,
+                destination=destination,
+                scan_result="skipped",
+                rules_triggered=[],
+                user_decision=None,
+                ssl_bypass_detected=False,
+                duration_ms=self._elapsed_ms(started),
+                exit_code=2,
+            )
+            return 2
 
         if not self._should_intercept(args, urls):
             exit_code = self._call_real_curl(args)
@@ -171,23 +190,62 @@ class CurlWrapper:
         return urls[0]
 
     def _extract_urls(self, args: list[str]) -> list[str]:
-        return [
-            arg for arg in args
-            if arg.startswith(("http://", "https://", "ftp://", "sftp://"))
-        ]
+        urls: list[str] = []
+        take_next_as_url = False
+        for arg in args:
+            if take_next_as_url:
+                if self._is_url(arg):
+                    urls.append(arg)
+                take_next_as_url = False
+                continue
+            if arg == "--url":
+                take_next_as_url = True
+                continue
+            if arg.startswith("--url="):
+                maybe_url = arg[6:]
+                if self._is_url(maybe_url):
+                    urls.append(maybe_url)
+                continue
+            if self._is_url(arg):
+                urls.append(arg)
+        return urls
 
-    def _extract_output(self, args: list[str]) -> str | None:
+    def _is_url(self, arg: str) -> bool:
+        return arg.startswith(("http://", "https://", "ftp://", "sftp://"))
+
+    def _extract_output(self, args: list[str], url: str | None = None) -> str | None:
         for i, arg in enumerate(args):
             if arg in ("-o", "--output"):
                 if i + 1 < len(args):
-                    return None if args[i + 1] == "-" else args[i + 1]
+                    return self._normalize_output(args[i + 1])
             elif arg.startswith("-o") and len(arg) > 2:
-                value = arg[2:]
-                return None if value == "-" else value
+                return self._normalize_output(arg[2:])
             elif arg.startswith("--output="):
-                value = arg[9:]
-                return None if value == "-" else value
+                return self._normalize_output(arg[9:])
+        if url and self._uses_remote_name(args):
+            return self._remote_name_from_url(url)
         return None
+
+    def _normalize_output(self, output: str) -> str | None:
+        if output == "-":
+            return None
+        return output
+
+    def _uses_remote_name(self, args: list[str]) -> bool:
+        for arg in args:
+            if arg in ("-O", "--remote-name"):
+                return True
+            if arg.startswith("--remote-name="):
+                return True
+            if arg.startswith("-") and not arg.startswith("--") and not arg.startswith("-o"):
+                if "O" in arg[1:]:
+                    return True
+        return False
+
+    def _remote_name_from_url(self, url: str) -> str | None:
+        path = unquote(urlparse(url).path)
+        name = Path(path).name
+        return name or None
 
     def _should_intercept(self, args: list[str], urls: list[str]) -> bool:
         if len(urls) != 1:
@@ -206,8 +264,6 @@ class CurlWrapper:
             "--data-binary",
             "--data-urlencode",
             "--next",
-            "-O",
-            "--remote-name",
             "-J",
             "--remote-header-name",
         }
@@ -217,7 +273,12 @@ class CurlWrapper:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".download") as handle:
             temp_path = Path(handle.name)
 
-        cmd = [str(self._config.real_curl_path), *self._sanitize_args(args), "--output", str(temp_path)]
+        cmd = [
+            str(self._config.real_curl_path),
+            *self._sanitize_args(args),
+            "--output",
+            str(temp_path),
+        ]
         result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         if result.returncode != 0:
             self._safe_unlink(temp_path)
@@ -241,6 +302,15 @@ class CurlWrapper:
             if arg.startswith("--output="):
                 continue
             if arg.startswith("-o") and arg != "-o":
+                continue
+            if arg in {"-O", "--remote-name"}:
+                continue
+            if arg.startswith("--remote-name="):
+                continue
+            if arg.startswith("-") and not arg.startswith("--") and not arg.startswith("-o"):
+                stripped_arg = "-" + "".join(ch for ch in arg[1:] if ch not in "OJ")
+                if stripped_arg != "-":
+                    sanitized.append(stripped_arg)
                 continue
             sanitized.append(arg)
         return sanitized

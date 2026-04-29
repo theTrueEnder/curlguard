@@ -11,8 +11,8 @@ from curlguard.ssl_detector import SslBypassDetector
 from curlguard.wrapper import CurlWrapper
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
+def _build_parser() -> argparse.ArgumentParser:
+    return argparse.ArgumentParser(
         prog="curlguard",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
@@ -41,12 +41,20 @@ Logs:
   Per-user:    ~/.curlguard/audit.log
   System-wide: /var/log/curlguard/audit.log""",
     )
-    parser.add_argument("--version", action="version", version=f"curlguard {__version__}")
-    parser.add_argument("curl_args", nargs=argparse.REMAINDER, help="Arguments to pass to curl")
-    args = parser.parse_args()
 
-    if not args.curl_args:
+
+def main(argv: list[str] | None = None) -> int:
+    curl_args = list(sys.argv[1:] if argv is None else argv)
+    parser = _build_parser()
+
+    if not curl_args:
         parser.print_help()
+        return 0
+    if curl_args in (["-h"], ["--help"]):
+        parser.print_help()
+        return 0
+    if curl_args == ["--version"]:
+        print(f"curlguard {__version__}")
         return 0
 
     config = load_config()
@@ -57,7 +65,7 @@ Logs:
     wrapper = CurlWrapper(config, scanner, logger, ssl_detector)
 
     try:
-        return wrapper.dispatch(args.curl_args)
+        return wrapper.dispatch(curl_args)
     finally:
         logger.close()
 
