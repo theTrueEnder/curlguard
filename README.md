@@ -1,8 +1,8 @@
 # curlguard
 
-`curlguard` is a Linux-first safety wrapper for `curl` that puts a scan-and-review step in front of risky installer commands.
+`curlguard` is a Linux-first safety wrapper for `curl` that grows toward a safer day-to-day `curl` experience without trying to replace the real tool.
 
-Instead of streaming remote content directly into `bash`, `curlguard` downloads supported requests with the real system `curl`, scans the payload with YARA rules, warns on insecure transport, and lets you decide what to do when content looks suspicious.
+Instead of streaming remote content directly into `bash`, `curlguard` downloads supported requests with the real system `curl`, scans the payload with YARA rules, warns on insecure transport, applies lightweight trust policy, and quarantines suspicious content by default.
 
 ## Why it exists
 
@@ -27,7 +27,9 @@ They are also a natural target for watering-hole and supply-chain attacks:
 - downloads to a temporary file before delivery
 - scans content with built-in, user, and auto-updated YARA rules
 - warns on insecure transport and downgraded TLS options
-- opens an interactive terminal review prompt for flagged content
+- supports configurable flagged-content policy: `quarantine`, `prompt`, `block`, or `allow`
+- supports lightweight trust decisions with trusted hosts and trusted SHA-256 checksums
+- writes quarantine metadata alongside quarantined payloads
 - logs activity to JSON Lines audit logs
 - supports configurable behavior when scanning is unavailable
 
@@ -40,6 +42,7 @@ Best-supported path:
 - installer-style commands
 - `curl ... | bash`
 - `curl ... -o file`
+- `curl ... -O`
 
 Requests outside that path are passed through to the real `curl`.
 
@@ -52,7 +55,6 @@ The wrapper currently defers to the real `curl` for flows such as:
 - `-F`, `--form`
 - `-d`, `--data`, `--data-raw`, `--data-binary`, `--data-urlencode`
 - `--next`
-- `-O`, `--remote-name`
 - `-J`, `--remote-header-name`
 - multi-URL invocations
 
@@ -71,22 +73,98 @@ curl command
           +-- detect insecure transport / TLS settings
           +-- download with the real curl to a temp file
           +-- scan with YARA
+          +-- check lightweight trust policy
                  |
                  +-- clean        -> deliver
-                 +-- flagged      -> interactive review prompt
+                 +-- flagged      -> quarantine / prompt / block / allow
                  +-- unavailable  -> warn or block, depending on policy
                  +-- error        -> warn or block, depending on policy
 ```
 
-## Interactive review
+## Flagged content handling
 
-When suspicious content is detected, `curlguard` opens an interactive terminal prompt and offers three actions:
+By default, suspicious content is quarantined and not delivered.
+
+You can choose one of four flagged-content policies:
+
+- `quarantine` — store the file locally and stop delivery
+- `prompt` — open the interactive terminal review prompt
+- `block` — refuse delivery and discard the temporary file
+- `allow` — deliver the file with a warning
+
+Set it with:
+
+```bash
+export CURLGUARD_MATCH_POLICY=quarantine
+```
+
+When `prompt` is enabled, `curlguard` opens an interactive terminal prompt and offers three actions:
 
 - `Block`
 - `Quarantine`
 - `Allow`
 
 If no interactive terminal is available, `curlguard` blocks the download instead of hanging.
+
+## Trust controls
+
+`curlguard` stays lightweight by keeping trust configuration file- and env-based.
+
+It can auto-allow flagged content when either of these matches:
+
+- the payload SHA-256 is in the trusted checksum list
+- the request host is in the trusted host list
+
+Environment-based trust:
+
+```bash
+export CURLGUARD_TRUSTED_HOSTS=downloads.example.com,artifacts.example.com
+export CURLGUARD_TRUSTED_SHA256=0123...,abcd...
+```
+
+File-based trust:
+
+```json
+{
+  "hosts": ["downloads.example.com"],
+  "sha256": ["0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]
+}
+```
+
+Save that file as:
+
+- per-user: `~/.curlguard/trust.json`
+- system-wide: `/var/lib/curlguard/trust.json`
+
+Or point to a custom location:
+
+```bash
+export CURLGUARD_TRUST_FILE=/path/to/trust.json
+```
+
+## Quarantine inspection
+
+Quarantined payloads stay file-based and easy to inspect.
+
+List everything currently in quarantine:
+
+```bash
+curlguard quarantine list
+```
+
+Inspect one payload by name, prefix, or metadata path:
+
+```bash
+curlguard quarantine inspect 1713900000_payload.download
+```
+
+Each quarantined payload keeps a JSON sidecar with:
+
+- capture time
+- source URL
+- matched rules
+- SHA-256
+- payload size
 
 ## Installation
 
@@ -143,7 +221,8 @@ curl http://127.0.0.1:8888/test.sh | bash
 Expected behavior:
 
 - `curlguard` reports suspicious content
-- an interactive review prompt opens
+- with the default policy, the payload is quarantined
+- with `CURLGUARD_MATCH_POLICY=prompt`, an interactive review prompt opens
 - choosing `Block` or `Quarantine` prevents the script from reaching `bash`
 
 ### True negative: clean content should pass
@@ -163,6 +242,7 @@ curl http://127.0.0.1:8889/install.sh -o /tmp/curlguard-demo.sh
 Expected behavior:
 
 - the file downloads without opening the review prompt
+- `curlguard` prints where it saved the file, along with its size and SHA-256
 - no suspicious rules are triggered
 
 ### Scanner-only sample
@@ -277,6 +357,8 @@ Current `scan_result` values include:
 - `error`
 - `skipped`
 
+Audit events also include the delivered or quarantined file checksum, size, and decision reason.
+
 ## Configuration
 
 All runtime configuration is currently environment-variable based.
@@ -291,7 +373,21 @@ All runtime configuration is currently environment-variable based.
 | `CURLGUARD_UPDATE_URL` | unset | URL used for auto-updated rules |
 | `CURLGUARD_UPDATE_INTERVAL_HOURS` | `24` | Rule update interval |
 | `CURLGUARD_SSL_WARN_ONLY` | `true` | Warn on TLS bypass unless a blocking-severity case is configured and this is `false` |
+| `CURLGUARD_MATCH_POLICY` | `quarantine` | `quarantine`, `prompt`, `block`, or `allow` when suspicious content is detected |
 | `CURLGUARD_SCAN_FAILURE_MODE` | `warn` | `warn` to deliver with warning, `block` to fail closed when scanning is unavailable |
+| `CURLGUARD_TRUST_FILE` | mode-specific | Optional JSON trust file with `hosts` and `sha256` arrays |
+| `CURLGUARD_TRUSTED_HOSTS` | unset | Comma-separated trusted hosts that can auto-allow flagged content |
+| `CURLGUARD_TRUSTED_SHA256` | unset | Comma-separated trusted SHA-256 checksums that can auto-allow flagged content |
+
+## Exit codes
+
+`curlguard` uses stable exit codes for its own policy decisions:
+
+- `0` — delivered or allowed
+- `10` — blocked due to suspicious content
+- `11` — quarantined due to suspicious content
+- `12` — blocked by SSL/TLS policy
+- `13` — blocked because scanning failed and fail-closed mode is enabled
 
 ## Uninstall
 
@@ -312,12 +408,13 @@ sudo pip uninstall curlguard
 
 ## Status
 
-`curlguard` is functional for its primary Linux installer-defense path, but it is still an early-stage security tool rather than a drop-in replacement for every `curl` workflow.
+`curlguard` is functional for its primary Linux safe-download path, but it is still an early-stage security tool rather than a drop-in replacement for every `curl` workflow.
 
 If you are evaluating or extending it, start with:
 
 - Linux
 - single-URL downloads
-- installer-style commands
+- installer-style and artifact-download commands
 - YARA-backed pre-delivery scanning
+- quarantine-first handling with file/env-based trust controls
 - the included true-positive and true-negative example servers

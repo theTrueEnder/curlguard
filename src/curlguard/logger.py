@@ -13,7 +13,11 @@ class AuditEvent:
     scan_result: str  # "clean" | "flagged" | "unavailable" | "error" | "skipped"
     rules_triggered: list = field(default_factory=list)
     user_decision: str | None = None  # "block" | "quarantine" | "allow" | None
+    decision_reason: str | None = None
     ssl_bypass_detected: bool = False
+    content_sha256: str | None = None
+    content_size_bytes: int | None = None
+    quarantine_path: str | None = None
     duration_ms: float = 0.0
     exit_code: int = 0
 
