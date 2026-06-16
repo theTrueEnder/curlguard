@@ -32,6 +32,7 @@ Best-supported flows:
 
 Pass-through behavior:
   Requests outside the supported interception path are delegated to the real curl.
+  Package-manager and non-interactive automation contexts also pass through by default.
 
 Testing:
   python3 examples/true_positive/start_server.py
@@ -39,7 +40,11 @@ Testing:
 
 Logs:
   Per-user:    ~/.curlguard/audit.log
-  System-wide: /var/log/curlguard/audit.log""",
+  System-wide: /var/log/curlguard/audit.log
+
+Review interface:
+  Default: TUI
+  Override: export CURLGUARD_REVIEW_INTERFACE=console""",
     )
 
 

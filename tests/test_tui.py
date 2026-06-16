@@ -30,7 +30,8 @@ def test_prompt_user_maps_quarantine_exit_code(monkeypatch):
 
 
 def test_tui_main_invokes_run_tui():
-    with patch("curlguard.tui.run_tui", return_value=1) as mock_run_tui:
+    with patch("curlguard.tui._TEXTUAL_AVAILABLE", True), \
+         patch("curlguard.tui.run_tui", return_value=1) as mock_run_tui:
         exit_code = main(
             [
                 "--rules-json",

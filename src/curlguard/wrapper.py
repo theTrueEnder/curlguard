@@ -1,5 +1,6 @@
 """Binary wrapper dispatcher module for curlguard."""
 import hashlib
+import os
 import shutil
 import subprocess
 import sys
@@ -98,9 +99,14 @@ class CurlWrapper:
                     f"curlguard: matched rules: {', '.join(scan_result.rules_triggered)}",
                     file=sys.stderr,
                 )
-                from curlguard.tui import prompt_user
+                from curlguard.review import prompt_user
 
-                decision = prompt_user(scan_result, url, ssl_result.is_bypass)
+                decision = prompt_user(
+                    scan_result,
+                    url,
+                    ssl_warn=ssl_result.is_bypass,
+                    interface=self._config.review_interface,
+                )
                 if decision == "block":
                     self._safe_unlink(temp_path)
                     self._log_event(
@@ -267,7 +273,93 @@ class CurlWrapper:
             "-J",
             "--remote-header-name",
         }
-        return not any(arg in unsupported_flags for arg in args)
+        if any(arg in unsupported_flags for arg in args):
+            return False
+
+        return not self._should_passthrough_for_context()
+
+    def _should_passthrough_for_context(self) -> bool:
+        if self._config.force_intercept or not self._config.context_aware_bypass:
+            return False
+
+        if not self._is_interactive_session():
+            return True
+
+        return self._has_passthrough_ancestor()
+
+    def _is_interactive_session(self) -> bool:
+        return self._stream_isatty(sys.stdin) or self._stream_isatty(sys.stderr)
+
+    def _stream_isatty(self, stream) -> bool:
+        try:
+            return stream.isatty()
+        except Exception:
+            return False
+
+    def _has_passthrough_ancestor(self) -> bool:
+        targets = tuple(name.lower() for name in self._config.passthrough_process_names if name)
+        if not targets:
+            return False
+
+        seen: set[int] = set()
+        pid = os.getppid()
+        while pid > 1 and pid not in seen:
+            seen.add(pid)
+            names = self._read_process_names(pid)
+            if any(
+                self._matches_passthrough_process(name, targets)
+                for name in names
+            ):
+                return True
+            pid = self._read_parent_pid(pid)
+        return False
+
+    def _read_process_names(self, pid: int) -> set[str]:
+        proc_dir = Path("/proc") / str(pid)
+        names: set[str] = set()
+
+        try:
+            cmdline = (proc_dir / "cmdline").read_bytes().split(b"\0")
+        except OSError:
+            cmdline = []
+        for raw_part in cmdline[:3]:
+            if not raw_part:
+                continue
+            decoded = raw_part.decode("utf-8", errors="ignore")
+            if decoded:
+                names.add(Path(decoded).name.lower())
+
+        try:
+            comm = (proc_dir / "comm").read_text(encoding="utf-8").strip().lower()
+        except OSError:
+            comm = ""
+        if comm:
+            names.add(comm)
+
+        try:
+            exe_name = Path(os.readlink(proc_dir / "exe")).name.lower()
+        except OSError:
+            exe_name = ""
+        if exe_name:
+            names.add(exe_name)
+
+        return names
+
+    def _read_parent_pid(self, pid: int) -> int:
+        status_path = Path("/proc") / str(pid) / "status"
+        try:
+            for line in status_path.read_text(encoding="utf-8").splitlines():
+                if line.startswith("PPid:"):
+                    return int(line.split(":", 1)[1].strip())
+        except (OSError, ValueError):
+            return 0
+        return 0
+
+    def _matches_passthrough_process(self, name: str, targets: tuple[str, ...]) -> bool:
+        return any(
+            name == target or name.startswith(f"{target}-") or target.startswith(name)
+            for target in targets
+        )
 
     def _download_to_temp(self, args: list[str]) -> Path:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".download") as handle:

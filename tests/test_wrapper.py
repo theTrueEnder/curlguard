@@ -95,6 +95,53 @@ def test_dispatch_rejects_multiple_urls(wrapper, capsys):
     wrapper._scanner.scan_file.assert_not_called()
 
 
+def test_dispatch_passthroughs_noninteractive_context(wrapper):
+    with patch.object(wrapper, "_is_interactive_session", return_value=False), \
+         patch.object(wrapper, "_call_real_curl", return_value=17) as call_real_curl:
+        exit_code = wrapper.dispatch(["https://example.com/install.sh"])
+
+    assert exit_code == 17
+    call_real_curl.assert_called_once_with(["https://example.com/install.sh"])
+    wrapper._scanner.scan_file.assert_not_called()
+
+
+def test_dispatch_passthroughs_package_manager_ancestor(wrapper):
+    with patch.object(wrapper, "_is_interactive_session", return_value=True), \
+         patch.object(wrapper, "_has_passthrough_ancestor", return_value=True), \
+         patch.object(wrapper, "_call_real_curl", return_value=23) as call_real_curl:
+        exit_code = wrapper.dispatch(["https://example.com/install.sh"])
+
+    assert exit_code == 23
+    call_real_curl.assert_called_once_with(["https://example.com/install.sh"])
+    wrapper._scanner.scan_file.assert_not_called()
+
+
+def test_force_intercept_overrides_context_bypass(wrapper, tmp_path):
+    wrapper._config.force_intercept = True
+    temp_path = tmp_path / "body.download"
+
+    class FakeTemp:
+        name = str(temp_path)
+
+        def __enter__(self):
+            temp_path.write_bytes(b"installer")
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    with patch.object(wrapper, "_is_interactive_session", return_value=False), \
+         patch.object(wrapper, "_has_passthrough_ancestor", return_value=True), \
+         patch("curlguard.wrapper.tempfile.NamedTemporaryFile", return_value=FakeTemp()), \
+         patch("curlguard.wrapper.subprocess.run") as run:
+        run.return_value = MagicMock(returncode=0)
+
+        exit_code = wrapper.dispatch(["https://example.com/install.sh"])
+
+    assert exit_code == 0
+    wrapper._scanner.scan_file.assert_called_once()
+
+
 def test_download_to_temp_does_not_inject_fail_or_forward_user_output(wrapper, tmp_path):
     temp_path = tmp_path / "body.download"
 
@@ -131,6 +178,7 @@ def test_download_to_temp_does_not_inject_fail_or_forward_user_output(wrapper, t
 
 
 def test_dispatch_honors_remote_name_output(wrapper, tmp_path, monkeypatch, capsys):
+    wrapper._config.force_intercept = True
     monkeypatch.chdir(tmp_path)
     temp_path = tmp_path / "body.download"
 
@@ -160,6 +208,7 @@ def test_dispatch_honors_remote_name_output(wrapper, tmp_path, monkeypatch, caps
 
 
 def test_dispatch_returns_real_curl_exit_code_on_download_failure(wrapper, tmp_path, capsys):
+    wrapper._config.force_intercept = True
     temp_path = tmp_path / "body.download"
 
     class FakeTemp:
@@ -186,3 +235,41 @@ def test_dispatch_returns_real_curl_exit_code_on_download_failure(wrapper, tmp_p
     assert "curl: (7) Failed to connect" in captured.err
     wrapper._scanner.scan_file.assert_not_called()
     assert not temp_path.exists()
+
+
+def test_dispatch_uses_configured_review_interface(wrapper, tmp_path):
+    wrapper._config.force_intercept = True
+    wrapper._config.review_interface = "console"
+    wrapper._scanner.scan_file.return_value = ScanResult(
+        clean=False,
+        matches=["suspicious_pipe_bash"],
+        rules_triggered=["suspicious_pipe_bash"],
+        scan_time_ms=1.0,
+        status="flagged",
+    )
+    temp_path = tmp_path / "body.download"
+
+    class FakeTemp:
+        name = str(temp_path)
+
+        def __enter__(self):
+            temp_path.write_bytes(b"installer")
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    with patch("curlguard.wrapper.tempfile.NamedTemporaryFile", return_value=FakeTemp()), \
+         patch("curlguard.wrapper.subprocess.run") as run, \
+         patch("curlguard.review.prompt_user", return_value="allow") as prompt_user:
+        run.return_value = MagicMock(returncode=0)
+
+        exit_code = wrapper.dispatch(["https://example.com/install.sh"])
+
+    assert exit_code == 0
+    prompt_user.assert_called_once_with(
+        wrapper._scanner.scan_file.return_value,
+        "https://example.com/install.sh",
+        ssl_warn=False,
+        interface="console",
+    )

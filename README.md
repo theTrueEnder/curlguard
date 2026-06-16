@@ -28,6 +28,7 @@ They are also a natural target for watering-hole and supply-chain attacks:
 - scans content with built-in, user, and auto-updated YARA rules
 - warns on insecure transport and downgraded TLS options
 - opens an interactive terminal review prompt for flagged content
+- defaults to context-aware pass-through for package managers and unattended automation
 - logs activity to JSON Lines audit logs
 - supports configurable behavior when scanning is unavailable
 
@@ -36,12 +37,13 @@ They are also a natural target for watering-hole and supply-chain attacks:
 Best-supported path:
 
 - Linux
+- interactive shell-driven downloads
 - single-URL downloads
 - installer-style commands
 - `curl ... | bash`
 - `curl ... -o file`
 
-Requests outside that path are passed through to the real `curl`.
+Requests outside that path, along with package-manager and non-interactive automation contexts, are passed through to the real `curl` by default.
 
 ### Known pass-through cases
 
@@ -55,6 +57,8 @@ The wrapper currently defers to the real `curl` for flows such as:
 - `-O`, `--remote-name`
 - `-J`, `--remote-header-name`
 - multi-URL invocations
+- non-interactive executions without a terminal
+- known package-manager and unattended-upgrade ancestors such as `apt`, `apt-get`, `dnf`, `yum`, `pacman`, `snap`, and `cloud-init`
 
 ## How it works
 
@@ -62,6 +66,11 @@ The wrapper currently defers to the real `curl` for flows such as:
 curl command
    |
    +-- unsupported request shape?
+   |      |
+   |      +-- package-manager / unattended automation context?
+   |      |      |
+   |      |      +-- pass through to the real curl
+   |      |      +-- write audit log entry with scan_result=skipped
    |      |
    |      +-- pass through to the real curl
    |      +-- write audit log entry with scan_result=skipped
@@ -85,6 +94,16 @@ When suspicious content is detected, `curlguard` opens an interactive terminal p
 - `Block`
 - `Quarantine`
 - `Allow`
+
+The default review experience is the Textual TUI. If you want a simpler fallback that behaves like a classic console prompt, set:
+
+```bash
+export CURLGUARD_REVIEW_INTERFACE=console
+```
+
+In console mode, `curlguard` shows the flagged URL and matched rules, then waits for a decision such as `B`, `Q`, or `A`.
+
+If `textual` is not installed, `curlguard` automatically falls back to the console prompt instead of failing closed at import time.
 
 If no interactive terminal is available, `curlguard` blocks the download instead of hanging.
 
@@ -110,6 +129,8 @@ sudo bash scripts/install-systemwide.sh
 ```
 
 This replaces `/usr/bin/curl` with the wrapper and stores the original binary as `/usr/bin/curl.real`.
+
+System-wide installs are compatibility-biased by default: package-manager and unattended automation contexts pass through to the real `curl` so security updates and similar maintenance jobs are not blocked.
 
 ### Verify
 
@@ -145,6 +166,15 @@ Expected behavior:
 - `curlguard` reports suspicious content
 - an interactive review prompt opens
 - choosing `Block` or `Quarantine` prevents the script from reaching `bash`
+
+Important:
+
+- the command above only exercises `curlguard` if your shell `curl` is already the installed wrapper
+- preflight with `which curl`; it should resolve to the wrapper path described in the install section
+- if you are running from the repo without installing the wrapper first, use `python3 -m curlguard http://127.0.0.1:8888/test.sh | bash`
+- if you only see normal curl progress output and no `curlguard:` messages, plain curl handled the request and the test is not exercising the guard path
+
+This project is Linux-first. For Windows development, run these flows in WSL or another Linux shell rather than PowerShell-native `curl`.
 
 ### True negative: clean content should pass
 
@@ -202,6 +232,8 @@ The automated suite currently covers:
 - `httpx`
 
 The install scripts try to use distro packages for `python3-yara`, `python3-requests`, and `python3-httpx`, and `pip` for `textual`.
+
+On Debian/Ubuntu-style systems such as WSL, the install scripts also try to bootstrap `pip` with `ensurepip` or `apt-get install python3-pip python3-venv python3-setuptools` when `python3 -m pip` is missing.
 
 ## Detection sources
 
@@ -288,10 +320,14 @@ All runtime configuration is currently environment-variable based.
 | `CURLGUARD_RULES_DIR` | mode-specific | Colon-separated rule directories |
 | `CURLGUARD_QUARANTINE` | mode-specific | Override quarantine directory |
 | `CURLGUARD_REAL_CURL_PATH` | auto-detect | Override the real curl binary path |
+| `CURLGUARD_REVIEW_INTERFACE` | `tui` | Review UI for flagged content: `tui` or `console` |
 | `CURLGUARD_UPDATE_URL` | unset | URL used for auto-updated rules |
 | `CURLGUARD_UPDATE_INTERVAL_HOURS` | `24` | Rule update interval |
 | `CURLGUARD_SSL_WARN_ONLY` | `true` | Warn on TLS bypass unless a blocking-severity case is configured and this is `false` |
 | `CURLGUARD_SCAN_FAILURE_MODE` | `warn` | `warn` to deliver with warning, `block` to fail closed when scanning is unavailable |
+| `CURLGUARD_CONTEXT_AWARE_BYPASS` | `true` | Pass through non-interactive and known automation/package-manager contexts instead of intercepting them |
+| `CURLGUARD_FORCE_INTERCEPT` | `false` | Override context-aware bypass for the current process and force interception |
+| `CURLGUARD_PASSTHROUGH_PROCESSES` | built-in list | Colon- or comma-separated parent process names that should bypass interception |
 
 ## Uninstall
 
@@ -312,7 +348,7 @@ sudo pip uninstall curlguard
 
 ## Status
 
-`curlguard` is functional for its primary Linux installer-defense path, but it is still an early-stage security tool rather than a drop-in replacement for every `curl` workflow.
+`curlguard` is functional for its primary Linux installer-defense path, but it is still an early-stage security tool rather than a drop-in replacement for every `curl` workflow. The default behavior is intentionally biased toward interactive shell use rather than system package-management plumbing.
 
 If you are evaluating or extending it, start with:
 

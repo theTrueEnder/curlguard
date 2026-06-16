@@ -6,6 +6,45 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+DEFAULT_PASSTHROUGH_PROCESSES = (
+    "add-apt-repository",
+    "ansible",
+    "ansible-playbook",
+    "apk",
+    "apt",
+    "apt-get",
+    "apt-key",
+    "aptitude",
+    "chef-client",
+    "cloud-init",
+    "dnf",
+    "do-release-upgrade",
+    "emerge",
+    "flatpak",
+    "microdnf",
+    "nix",
+    "nix-env",
+    "nixos-rebuild",
+    "packagekit",
+    "packagekitd",
+    "pacman",
+    "pamac",
+    "paru",
+    "puppet",
+    "salt-call",
+    "salt-minion",
+    "snap",
+    "snapd",
+    "software-properties",
+    "unattended-upgrade",
+    "unattended-upgrades",
+    "waagent",
+    "xbps-install",
+    "yay",
+    "yum",
+    "zypper",
+)
+
 
 @dataclass
 class CurlGuardConfig:
@@ -14,10 +53,14 @@ class CurlGuardConfig:
     rules_dirs: list[Path] = field(default_factory=list)
     quarantine_dir: Path = field(default_factory=lambda: Path.home() / ".curlguard" / "quarantine")
     real_curl_path: Path = field(default_factory=lambda: Path("/usr/bin/curl"))
+    review_interface: Literal["tui", "console"] = "tui"
     update_url: str | None = None
     update_interval_hours: int = 24
     ssl_warn_only: bool = True
     scan_failure_mode: Literal["warn", "block"] = "warn"
+    context_aware_bypass: bool = True
+    force_intercept: bool = False
+    passthrough_process_names: tuple[str, ...] = DEFAULT_PASSTHROUGH_PROCESSES
 
 
 def _detect_mode() -> Literal["per-user", "system-wide"]:
@@ -54,6 +97,19 @@ def _detect_real_curl(mode: Literal["per-user", "system-wide"]) -> Path:
     return Path("/usr/bin/curl.real" if mode == "system-wide" else "/usr/bin/curl")
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.lower() not in {"0", "false", "no", "off"}
+
+
+def _split_process_names(value: str) -> tuple[str, ...]:
+    normalized = value.replace(",", ":").replace(";", ":")
+    names = [entry.strip().lower() for entry in normalized.split(":") if entry.strip()]
+    return tuple(names)
+
+
 def load_config() -> CurlGuardConfig:
     mode = os.environ.get("CURLGUARD_MODE", _detect_mode())
     if mode not in ("per-user", "system-wide"):
@@ -75,12 +131,22 @@ def load_config() -> CurlGuardConfig:
     log_path = Path(os.environ.get("CURLGUARD_LOG_PATH", str(default_log)))
     quarantine_dir = Path(os.environ.get("CURLGUARD_QUARANTINE", str(default_quarantine)))
     real_curl_path = Path(os.environ.get("CURLGUARD_REAL_CURL_PATH", str(default_real_curl)))
+    review_interface = os.environ.get("CURLGUARD_REVIEW_INTERFACE", "tui").lower()
+    if review_interface not in {"tui", "console"}:
+        review_interface = "tui"
     update_url = os.environ.get("CURLGUARD_UPDATE_URL")
     update_interval = int(os.environ.get("CURLGUARD_UPDATE_INTERVAL_HOURS", "24"))
     ssl_warn_only = os.environ.get("CURLGUARD_SSL_WARN_ONLY", "true").lower() != "false"
     scan_failure_mode = os.environ.get("CURLGUARD_SCAN_FAILURE_MODE", "warn").lower()
     if scan_failure_mode not in {"warn", "block"}:
         scan_failure_mode = "warn"
+    context_aware_bypass = _env_flag("CURLGUARD_CONTEXT_AWARE_BYPASS", True)
+    force_intercept = _env_flag("CURLGUARD_FORCE_INTERCEPT", False)
+    passthrough_env = os.environ.get("CURLGUARD_PASSTHROUGH_PROCESSES", "")
+    if passthrough_env:
+        passthrough_process_names = _split_process_names(passthrough_env)
+    else:
+        passthrough_process_names = DEFAULT_PASSTHROUGH_PROCESSES
 
     rules_env = os.environ.get("CURLGUARD_RULES_DIR", "")
     if rules_env:
@@ -104,8 +170,12 @@ def load_config() -> CurlGuardConfig:
         rules_dirs=rules_dirs,
         quarantine_dir=quarantine_dir,
         real_curl_path=real_curl_path,
+        review_interface=review_interface,
         update_url=update_url,
         update_interval_hours=update_interval,
         ssl_warn_only=ssl_warn_only,
         scan_failure_mode=scan_failure_mode,
+        context_aware_bypass=context_aware_bypass,
+        force_intercept=force_intercept,
+        passthrough_process_names=passthrough_process_names,
     )

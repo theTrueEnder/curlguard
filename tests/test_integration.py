@@ -26,6 +26,7 @@ def temp_config(tmp_path):
         quarantine_dir=tmp_path / "quarantine",
         real_curl_path=Path("/usr/bin/curl"),
     )
+    config.force_intercept = True
     config.quarantine_dir.mkdir(parents=True, exist_ok=True)
     return config
 
