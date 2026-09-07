@@ -1,4 +1,5 @@
 """Binary wrapper dispatcher module for curlguard."""
+
 import hashlib
 import os
 import shutil
@@ -6,11 +7,10 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import unquote, urlparse
 
+from curlguard.curl_args import parse_curl_args
 from curlguard.logger import AuditEvent
 
 
@@ -21,31 +21,19 @@ class CurlWrapper:
         self._logger = logger
         self._ssl_detector = ssl_detector
 
+    def will_intercept(self, args: list[str]) -> bool:
+        return (
+            parse_curl_args(args).intercept
+            and not self._should_passthrough_for_context()
+        )
+
     def dispatch(self, args: list[str]) -> int:
         started = time.perf_counter()
-        urls = self._extract_urls(args)
-        url = urls[0] if len(urls) == 1 else ""
-        destination = self._extract_output(args, url)
+        invocation = parse_curl_args(args)
+        url = invocation.urls[0] if len(invocation.urls) == 1 else ""
+        destination = invocation.output
 
-        if len(urls) > 1:
-            print(
-                "curlguard: multiple URLs in one curl command are not supported; "
-                "run one URL per command so each response can be scanned",
-                file=sys.stderr,
-            )
-            self._log_event(
-                url=url,
-                destination=destination,
-                scan_result="skipped",
-                rules_triggered=[],
-                user_decision=None,
-                ssl_bypass_detected=False,
-                duration_ms=self._elapsed_ms(started),
-                exit_code=2,
-            )
-            return 2
-
-        if not self._should_intercept(args, urls):
+        if not self.will_intercept(args):
             exit_code = self._call_real_curl(args)
             self._log_event(
                 url=url,
@@ -185,6 +173,23 @@ class CurlWrapper:
                 exit_code=exc.returncode,
             )
             return exc.returncode
+        except OSError as exc:
+            exit_code = 127 if isinstance(exc, FileNotFoundError) else 1
+            print(
+                f"curlguard: unable to complete guarded download: {exc}",
+                file=sys.stderr,
+            )
+            self._log_event(
+                url=url,
+                destination=destination,
+                scan_result="error",
+                rules_triggered=[],
+                user_decision="block",
+                ssl_bypass_detected=ssl_result.is_bypass,
+                duration_ms=self._elapsed_ms(started),
+                exit_code=exit_code,
+            )
+            return exit_code
         finally:
             if temp_path and temp_path.exists():
                 self._safe_unlink(temp_path)
@@ -196,95 +201,27 @@ class CurlWrapper:
         return urls[0]
 
     def _extract_urls(self, args: list[str]) -> list[str]:
-        urls: list[str] = []
-        take_next_as_url = False
-        for arg in args:
-            if take_next_as_url:
-                if self._is_url(arg):
-                    urls.append(arg)
-                take_next_as_url = False
-                continue
-            if arg == "--url":
-                take_next_as_url = True
-                continue
-            if arg.startswith("--url="):
-                maybe_url = arg[6:]
-                if self._is_url(maybe_url):
-                    urls.append(maybe_url)
-                continue
-            if self._is_url(arg):
-                urls.append(arg)
-        return urls
+        return list(parse_curl_args(args).urls)
 
     def _is_url(self, arg: str) -> bool:
-        return arg.startswith(("http://", "https://", "ftp://", "sftp://"))
+        return arg.lower().startswith(("http://", "https://"))
 
     def _extract_output(self, args: list[str], url: str | None = None) -> str | None:
-        for i, arg in enumerate(args):
-            if arg in ("-o", "--output"):
-                if i + 1 < len(args):
-                    return self._normalize_output(args[i + 1])
-            elif arg.startswith("-o") and len(arg) > 2:
-                return self._normalize_output(arg[2:])
-            elif arg.startswith("--output="):
-                return self._normalize_output(arg[9:])
-        if url and self._uses_remote_name(args):
-            return self._remote_name_from_url(url)
-        return None
+        return parse_curl_args(args).output
 
     def _normalize_output(self, output: str) -> str | None:
         if output == "-":
             return None
         return output
 
-    def _uses_remote_name(self, args: list[str]) -> bool:
-        for arg in args:
-            if arg in ("-O", "--remote-name"):
-                return True
-            if arg.startswith("--remote-name="):
-                return True
-            if arg.startswith("-") and not arg.startswith("--") and not arg.startswith("-o"):
-                if "O" in arg[1:]:
-                    return True
-        return False
-
-    def _remote_name_from_url(self, url: str) -> str | None:
-        path = unquote(urlparse(url).path)
-        name = Path(path).name
-        return name or None
-
     def _should_intercept(self, args: list[str], urls: list[str]) -> bool:
-        if len(urls) != 1:
-            return False
-
-        unsupported_flags = {
-            "-I",
-            "--head",
-            "-T",
-            "--upload-file",
-            "-F",
-            "--form",
-            "-d",
-            "--data",
-            "--data-raw",
-            "--data-binary",
-            "--data-urlencode",
-            "--next",
-            "-J",
-            "--remote-header-name",
-        }
-        if any(arg in unsupported_flags for arg in args):
-            return False
-
-        return not self._should_passthrough_for_context()
+        return self.will_intercept(args)
 
     def _should_passthrough_for_context(self) -> bool:
         if self._config.force_intercept or not self._config.context_aware_bypass:
             return False
-
-        if not self._is_interactive_session():
-            return True
-
+        if os.environ.get("CURLGUARD_SHIM_ACTIVE") != "1":
+            return False
         return self._has_passthrough_ancestor()
 
     def _is_interactive_session(self) -> bool:
@@ -297,7 +234,9 @@ class CurlWrapper:
             return False
 
     def _has_passthrough_ancestor(self) -> bool:
-        targets = tuple(name.lower() for name in self._config.passthrough_process_names if name)
+        targets = tuple(
+            name.lower() for name in self._config.passthrough_process_names if name
+        )
         if not targets:
             return False
 
@@ -306,10 +245,7 @@ class CurlWrapper:
         while pid > 1 and pid not in seen:
             seen.add(pid)
             names = self._read_process_names(pid)
-            if any(
-                self._matches_passthrough_process(name, targets)
-                for name in names
-            ):
+            if any(self._matches_passthrough_process(name, targets) for name in names):
                 return True
             pid = self._read_parent_pid(pid)
         return False
@@ -322,7 +258,7 @@ class CurlWrapper:
             cmdline = (proc_dir / "cmdline").read_bytes().split(b"\0")
         except OSError:
             cmdline = []
-        for raw_part in cmdline[:3]:
+        for raw_part in cmdline[:1]:
             if not raw_part:
                 continue
             decoded = raw_part.decode("utf-8", errors="ignore")
@@ -357,17 +293,23 @@ class CurlWrapper:
 
     def _matches_passthrough_process(self, name: str, targets: tuple[str, ...]) -> bool:
         return any(
-            name == target or name.startswith(f"{target}-") or target.startswith(name)
-            for target in targets
+            name == target or name.startswith(f"{target}-") for target in targets
         )
 
     def _download_to_temp(self, args: list[str]) -> Path:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".download") as handle:
             temp_path = Path(handle.name)
 
+        invocation = parse_curl_args(args)
+        if not invocation.intercept:
+            self._safe_unlink(temp_path)
+            raise ValueError(f"unsupported guarded request: {invocation.reason}")
+
         cmd = [
             str(self._config.real_curl_path),
-            *self._sanitize_args(args),
+            *invocation.download_args,
+            "--max-filesize",
+            str(self._config.max_download_bytes),
             "--output",
             str(temp_path),
         ]
@@ -379,33 +321,14 @@ class CurlWrapper:
                 cmd,
                 stderr=result.stderr,
             )
+        if temp_path.stat().st_size > self._config.max_download_bytes:
+            self._safe_unlink(temp_path)
+            raise OSError("download exceeded CURLGUARD_MAX_DOWNLOAD_BYTES")
         return temp_path
 
     def _sanitize_args(self, args: list[str]) -> list[str]:
-        sanitized: list[str] = []
-        skip_next = False
-        for arg in args:
-            if skip_next:
-                skip_next = False
-                continue
-            if arg in {"-o", "--output"}:
-                skip_next = True
-                continue
-            if arg.startswith("--output="):
-                continue
-            if arg.startswith("-o") and arg != "-o":
-                continue
-            if arg in {"-O", "--remote-name"}:
-                continue
-            if arg.startswith("--remote-name="):
-                continue
-            if arg.startswith("-") and not arg.startswith("--") and not arg.startswith("-o"):
-                stripped_arg = "-" + "".join(ch for ch in arg[1:] if ch not in "OJ")
-                if stripped_arg != "-":
-                    sanitized.append(stripped_arg)
-                continue
-            sanitized.append(arg)
-        return sanitized
+        invocation = parse_curl_args(args)
+        return list(invocation.download_args) if invocation.intercept else list(args)
 
     def _call_real_curl(self, args: list[str]) -> int:
         cmd = [str(self._config.real_curl_path)] + args
@@ -422,9 +345,7 @@ class CurlWrapper:
         scan_result,
         ssl_bypass_detected: bool,
     ) -> int:
-        warning = (
-            f"WARNING: curlguard scan {scan_result.status}: {scan_result.error or 'unknown error'}"
-        )
+        warning = f"WARNING: curlguard scan {scan_result.status}: {scan_result.error or 'unknown error'}"
         if self._config.scan_failure_mode == "block":
             print(f"{warning}. Blocking download.", file=sys.stderr)
             self._safe_unlink(temp_path)
@@ -440,7 +361,10 @@ class CurlWrapper:
             )
             return 1
 
-        print(f"{warning}. Delivering content due to configured warn mode.", file=sys.stderr)
+        print(
+            f"{warning}. Delivering content due to configured warn mode.",
+            file=sys.stderr,
+        )
         delivery_target, metadata = self._deliver_file(temp_path, destination)
         self._print_delivery_summary(
             delivery_target=delivery_target,
@@ -460,7 +384,9 @@ class CurlWrapper:
         )
         return 0
 
-    def _deliver_file(self, temp_path: Path, output_file: str | None) -> tuple[str, str]:
+    def _deliver_file(
+        self, temp_path: Path, output_file: str | None
+    ) -> tuple[str, str]:
         metadata = self._format_file_metadata(temp_path)
         if output_file:
             shutil.move(str(temp_path), output_file)
@@ -492,9 +418,13 @@ class CurlWrapper:
             )
 
     def _format_file_metadata(self, path: Path) -> str:
-        payload = path.read_bytes()
-        checksum = hashlib.sha256(payload).hexdigest()
-        size = len(payload)
+        digest = hashlib.sha256()
+        size = 0
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                size += len(chunk)
+                digest.update(chunk)
+        checksum = digest.hexdigest()
         return f"{size} bytes, sha256={checksum}"
 
     def _quarantine_file(self, temp_path: Path) -> Path:
@@ -538,18 +468,3 @@ class CurlWrapper:
             path.unlink(missing_ok=True)
         except OSError:
             pass
-
-    def stream_scan(self, args: list[str]) -> Iterator[bytes]:
-        cmd = [str(self._config.real_curl_path)] + args
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
-        buffer = bytearray()
-        for chunk in iter(lambda: proc.stdout.read(8192), b""):
-            buffer.extend(chunk)
-            yield chunk
-
-        # Scan accumulated buffer
-        if buffer:
-            result = self._scanner.scan(bytes(buffer))
-            if not result.clean:
-                proc.terminate()
-                raise ValueError(f"Malware detected: {result.rules_triggered}")

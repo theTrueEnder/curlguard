@@ -1,17 +1,19 @@
 [project]
 name = "curlguard"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Secure curl wrapper with YARA scanning - protects against malicious install scripts"
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "yara-python>=4.3.0",
-    "textual>=0.50.0",
-    "requests>=2.31.0",
-    "httpx>=0.27.0",
 ]
 
 [project.optional-dependencies]
+tui = [
+    "textual>=0.50.0",
+]
 dev = [
+    "build>=1.2.0",
     "pytest>=8.0.0",
     "pytest-mock>=3.12.0",
     "ruff>=0.3.0",
@@ -20,6 +22,11 @@ dev = [
 [project.scripts]
 curlguard = "curlguard.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/theTrueEnder/curlguard"
+Repository = "https://github.com/theTrueEnder/curlguard"
+Issues = "https://github.com/theTrueEnder/curlguard/issues"
+
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
@@ -27,8 +34,15 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+curlguard = ["rules/*.yar"]
+
+[tool.setuptools.dynamic]
+version = {attr = "curlguard.__version__"}
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v"

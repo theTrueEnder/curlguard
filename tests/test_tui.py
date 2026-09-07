@@ -12,7 +12,10 @@ class DummyScanResult:
 
 
 def test_prompt_user_returns_block_when_no_terminal(monkeypatch, capsys):
-    monkeypatch.setattr("curlguard.tui._launch_tui_subprocess", MagicMock(side_effect=RuntimeError("no tty")))
+    monkeypatch.setattr(
+        "curlguard.tui._launch_tui_subprocess",
+        MagicMock(side_effect=RuntimeError("no tty")),
+    )
 
     decision = prompt_user(DummyScanResult(), "https://example.com/install.sh")
 
@@ -22,16 +25,22 @@ def test_prompt_user_returns_block_when_no_terminal(monkeypatch, capsys):
 
 
 def test_prompt_user_maps_quarantine_exit_code(monkeypatch):
-    monkeypatch.setattr("curlguard.tui._launch_tui_subprocess", MagicMock(return_value=2))
+    monkeypatch.setattr(
+        "curlguard.tui._launch_tui_subprocess", MagicMock(return_value=2)
+    )
 
-    decision = prompt_user(DummyScanResult(), "https://example.com/install.sh", ssl_warn=True)
+    decision = prompt_user(
+        DummyScanResult(), "https://example.com/install.sh", ssl_warn=True
+    )
 
     assert decision == "quarantine"
 
 
 def test_tui_main_invokes_run_tui():
-    with patch("curlguard.tui._TEXTUAL_AVAILABLE", True), \
-         patch("curlguard.tui.run_tui", return_value=1) as mock_run_tui:
+    with (
+        patch("curlguard.tui._TEXTUAL_AVAILABLE", True),
+        patch("curlguard.tui.run_tui", return_value=1) as mock_run_tui,
+    ):
         exit_code = main(
             [
                 "--rules-json",

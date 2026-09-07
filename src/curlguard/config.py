@@ -1,7 +1,7 @@
 """Configuration module for curlguard."""
+
 import os
 import shutil
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -51,40 +51,33 @@ class CurlGuardConfig:
     mode: Literal["per-user", "system-wide"]
     log_path: Path
     rules_dirs: list[Path] = field(default_factory=list)
-    quarantine_dir: Path = field(default_factory=lambda: Path.home() / ".curlguard" / "quarantine")
+    quarantine_dir: Path = field(
+        default_factory=lambda: Path.home() / ".curlguard" / "quarantine"
+    )
     real_curl_path: Path = field(default_factory=lambda: Path("/usr/bin/curl"))
     review_interface: Literal["tui", "console"] = "tui"
     update_url: str | None = None
+    update_sha256: str | None = None
     update_interval_hours: int = 24
     ssl_warn_only: bool = True
-    scan_failure_mode: Literal["warn", "block"] = "warn"
+    scan_failure_mode: Literal["warn", "block"] = "block"
     context_aware_bypass: bool = True
     force_intercept: bool = False
     passthrough_process_names: tuple[str, ...] = DEFAULT_PASSTHROUGH_PROCESSES
+    max_download_bytes: int = 100 * 1024 * 1024
+    scan_timeout_seconds: int = 10
 
 
 def _detect_mode() -> Literal["per-user", "system-wide"]:
-    home_bin_real = Path.home() / ".local/bin" / "curl.real"
-    system_bin_real = Path("/usr/bin/curl.real")
-    if home_bin_real.exists():
-        return "per-user"
-    if system_bin_real.exists():
-        return "system-wide"
-    return os.environ.get("CURLGUARD_MODE", "system-wide")
+    return "per-user"
 
 
 def _detect_real_curl(mode: Literal["per-user", "system-wide"]) -> Path:
-    candidates: list[Path] = []
-    if mode == "system-wide":
-        candidates.append(Path("/usr/bin/curl.real"))
-
-    candidates.extend(
-        [
-            Path("/usr/bin/curl"),
-            Path("/usr/local/bin/curl"),
-            Path("/bin/curl"),
-        ]
-    )
+    candidates = [
+        Path("/usr/bin/curl"),
+        Path("/usr/local/bin/curl"),
+        Path("/bin/curl"),
+    ]
 
     for candidate in candidates:
         if candidate.exists():
@@ -94,7 +87,7 @@ def _detect_real_curl(mode: Literal["per-user", "system-wide"]) -> Path:
     if discovered:
         return Path(discovered)
 
-    return Path("/usr/bin/curl.real" if mode == "system-wide" else "/usr/bin/curl")
+    return Path("/usr/bin/curl")
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -113,7 +106,7 @@ def _split_process_names(value: str) -> tuple[str, ...]:
 def load_config() -> CurlGuardConfig:
     mode = os.environ.get("CURLGUARD_MODE", _detect_mode())
     if mode not in ("per-user", "system-wide"):
-        mode = "system-wide"
+        mode = "per-user"
 
     home = Path.home()
     if mode == "per-user":
@@ -129,17 +122,22 @@ def load_config() -> CurlGuardConfig:
 
     # Env var overrides
     log_path = Path(os.environ.get("CURLGUARD_LOG_PATH", str(default_log)))
-    quarantine_dir = Path(os.environ.get("CURLGUARD_QUARANTINE", str(default_quarantine)))
-    real_curl_path = Path(os.environ.get("CURLGUARD_REAL_CURL_PATH", str(default_real_curl)))
+    quarantine_dir = Path(
+        os.environ.get("CURLGUARD_QUARANTINE", str(default_quarantine))
+    )
+    real_curl_path = Path(
+        os.environ.get("CURLGUARD_REAL_CURL_PATH", str(default_real_curl))
+    )
     review_interface = os.environ.get("CURLGUARD_REVIEW_INTERFACE", "tui").lower()
     if review_interface not in {"tui", "console"}:
         review_interface = "tui"
     update_url = os.environ.get("CURLGUARD_UPDATE_URL")
-    update_interval = int(os.environ.get("CURLGUARD_UPDATE_INTERVAL_HOURS", "24"))
+    update_sha256 = os.environ.get("CURLGUARD_UPDATE_SHA256")
+    update_interval = _positive_int_env("CURLGUARD_UPDATE_INTERVAL_HOURS", 24)
     ssl_warn_only = os.environ.get("CURLGUARD_SSL_WARN_ONLY", "true").lower() != "false"
-    scan_failure_mode = os.environ.get("CURLGUARD_SCAN_FAILURE_MODE", "warn").lower()
+    scan_failure_mode = os.environ.get("CURLGUARD_SCAN_FAILURE_MODE", "block").lower()
     if scan_failure_mode not in {"warn", "block"}:
-        scan_failure_mode = "warn"
+        scan_failure_mode = "block"
     context_aware_bypass = _env_flag("CURLGUARD_CONTEXT_AWARE_BYPASS", True)
     force_intercept = _env_flag("CURLGUARD_FORCE_INTERCEPT", False)
     passthrough_env = os.environ.get("CURLGUARD_PASSTHROUGH_PROCESSES", "")
@@ -153,6 +151,11 @@ def load_config() -> CurlGuardConfig:
         rules_dirs = [Path(p) for p in rules_env.split(":") if p]
     else:
         rules_dirs = default_rules
+
+    max_download_bytes = _positive_int_env(
+        "CURLGUARD_MAX_DOWNLOAD_BYTES", 100 * 1024 * 1024
+    )
+    scan_timeout_seconds = _positive_int_env("CURLGUARD_SCAN_TIMEOUT_SECONDS", 10)
 
     # Create parent directories
     try:
@@ -172,10 +175,21 @@ def load_config() -> CurlGuardConfig:
         real_curl_path=real_curl_path,
         review_interface=review_interface,
         update_url=update_url,
+        update_sha256=update_sha256,
         update_interval_hours=update_interval,
         ssl_warn_only=ssl_warn_only,
         scan_failure_mode=scan_failure_mode,
         context_aware_bypass=context_aware_bypass,
         force_intercept=force_intercept,
         passthrough_process_names=passthrough_process_names,
+        max_download_bytes=max_download_bytes,
+        scan_timeout_seconds=scan_timeout_seconds,
     )
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default

@@ -9,12 +9,12 @@ def _open_interactive_terminal() -> tuple[TextIO, TextIO] | None:
     try:
         if os.name == "posix":
             return (
-                open("/dev/tty", "r", encoding="utf-8", errors="ignore"),
+                open("/dev/tty", encoding="utf-8", errors="ignore"),
                 open("/dev/tty", "w", encoding="utf-8", errors="ignore"),
             )
         if os.name == "nt":
             return (
-                open("CONIN$", "r", encoding="utf-8", errors="ignore"),
+                open("CONIN$", encoding="utf-8", errors="ignore"),
                 open("CONOUT$", "w", encoding="utf-8", errors="ignore"),
             )
     except OSError:

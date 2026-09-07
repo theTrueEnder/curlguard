@@ -1,5 +1,7 @@
 """CLI entry point for curlguard."""
+
 import argparse
+import os
 import sys
 
 from curlguard import __version__
@@ -32,7 +34,7 @@ Best-supported flows:
 
 Pass-through behavior:
   Requests outside the supported interception path are delegated to the real curl.
-  Package-manager and non-interactive automation contexts also pass through by default.
+  Known package-manager contexts pass through; supported non-interactive downloads are scanned.
 
 Testing:
   python3 examples/true_positive/start_server.py
@@ -51,23 +53,28 @@ Review interface:
 def main(argv: list[str] | None = None) -> int:
     curl_args = list(sys.argv[1:] if argv is None else argv)
     parser = _build_parser()
+    shim_active = os.environ.get("CURLGUARD_SHIM_ACTIVE") == "1"
 
-    if not curl_args:
+    if not curl_args and not shim_active:
         parser.print_help()
         return 0
-    if curl_args in (["-h"], ["--help"]):
+    if curl_args in (["-h"], ["--help"]) and not shim_active:
         parser.print_help()
         return 0
-    if curl_args == ["--version"]:
+    if curl_args == ["--version"] and not shim_active:
         print(f"curlguard {__version__}")
         return 0
 
     config = load_config()
-    scanner = YaraScanner(config.rules_dirs)
-    AutoUpdater(config, scanner).check_and_update()
+    scanner = YaraScanner(
+        config.rules_dirs,
+        scan_timeout_seconds=config.scan_timeout_seconds,
+    )
     logger = AuditLogger(config.log_path)
     ssl_detector = SslBypassDetector()
     wrapper = CurlWrapper(config, scanner, logger, ssl_detector)
+    if wrapper.will_intercept(curl_args):
+        AutoUpdater(config, scanner).check_and_update()
 
     try:
         return wrapper.dispatch(curl_args)

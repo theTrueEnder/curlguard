@@ -41,6 +41,7 @@ def main() -> None:
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
     with ReusableTCPServer(("127.0.0.1", PORT), QuietHandler) as listener:
+
         def expire() -> None:
             time.sleep(TTL_SECONDS)
             print(f"\n[Test server expired after {TTL_SECONDS} seconds]", flush=True)
@@ -48,13 +49,21 @@ def main() -> None:
 
         threading.Thread(target=expire, daemon=True).start()
 
-        print(f"curlguard true-negative server is running on http://127.0.0.1:{PORT}", flush=True)
+        print(
+            f"curlguard true-negative server is running on http://127.0.0.1:{PORT}",
+            flush=True,
+        )
         print("Serving: /install.sh", flush=True)
-        print("Expected result: the file downloads without a malware prompt.", flush=True)
+        print(
+            "Expected result: the file downloads without a malware prompt.", flush=True
+        )
         print(f"Server lifetime: {TTL_SECONDS} seconds", flush=True)
         print("", flush=True)
         print("Run in another terminal:", flush=True)
-        print("  curl http://127.0.0.1:8889/install.sh -o /tmp/curlguard-demo.sh", flush=True)
+        print(
+            "  curlguard http://127.0.0.1:8889/install.sh -o /tmp/curlguard-demo.sh",
+            flush=True,
+        )
         print("", flush=True)
 
         try:

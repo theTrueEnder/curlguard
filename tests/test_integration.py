@@ -1,7 +1,6 @@
 import hashlib
 import json
 import sys
-import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -55,7 +54,9 @@ def test_scanner_true_positive_matches_foundation_rules():
 def test_scanner_true_negative_stays_clean():
     pytest.importorskip("yara")
     scanner = YaraScanner([Path("src/curlguard/rules")])
-    result = scanner.scan(b"#!/bin/sh\necho safe install\ncurl https://example.com/file.txt -o /tmp/file.txt\n")
+    result = scanner.scan(
+        b"#!/bin/sh\necho safe install\ncurl https://example.com/file.txt -o /tmp/file.txt\n"
+    )
     assert result.clean is True
     assert result.rules_triggered == []
     assert result.status == "clean"
@@ -65,8 +66,8 @@ def test_true_negative_example_content_stays_clean():
     pytest.importorskip("yara")
     scanner = YaraScanner([Path("src/curlguard/rules")])
     result = scanner.scan(
-        b"#!/bin/bash\nset -e\necho \"curlguard clean test script\"\n"
-        b"echo \"This script is expected to pass without opening the review prompt.\"\n"
+        b'#!/bin/bash\nset -e\necho "curlguard clean test script"\n'
+        b'echo "This script is expected to pass without opening the review prompt."\n'
     )
     assert result.clean is True
     assert result.rules_triggered == []
@@ -125,24 +126,29 @@ def test_curl_manager_per_user_install_writes_wrapper(tmp_path, monkeypatch):
     wrapper_contents = manager._curl_path.read_text(encoding="utf-8")
     assert manager._curl_path.exists()
     assert manager._curl_real == real_curl
-    assert "CURLGUARD_MODE=per-user" in wrapper_contents
+    assert "CURLGUARD_MODE:=per-user" in wrapper_contents
+    assert "CURLGUARD_SHIM_ACTIVE=1" in wrapper_contents
     assert str(real_curl) in wrapper_contents
 
 
 def test_curl_manager_system_wide_paths():
     manager = CurlManager("system-wide")
-    assert manager._curl_path == Path("/usr/bin/curl")
-    assert manager._curl_real == Path("/usr/bin/curl.real")
+    assert manager._curl_path == Path("/usr/local/libexec/curlguard/bin/curl")
+    assert manager._curl_real != Path("/usr/bin/curl.real")
 
 
 def test_wrapper_extract_output_supports_stdout_marker(temp_config, mock_ssl_detector):
-    wrapper = CurlWrapper(temp_config, MagicMock(), AuditLogger(temp_config.log_path), mock_ssl_detector)
+    wrapper = CurlWrapper(
+        temp_config, MagicMock(), AuditLogger(temp_config.log_path), mock_ssl_detector
+    )
     assert wrapper._extract_output(["-o", "-", "https://example.com"]) is None
     wrapper._logger.close()
 
 
 def test_wrapper_download_to_temp_rewrites_output_flags(temp_config, mock_ssl_detector):
-    wrapper = CurlWrapper(temp_config, MagicMock(), AuditLogger(temp_config.log_path), mock_ssl_detector)
+    wrapper = CurlWrapper(
+        temp_config, MagicMock(), AuditLogger(temp_config.log_path), mock_ssl_detector
+    )
 
     def fake_run(cmd, stdout=None, stderr=None):
         temp_path = Path(cmd[-1])
@@ -152,13 +158,18 @@ def test_wrapper_download_to_temp_rewrites_output_flags(temp_config, mock_ssl_de
         return MagicMock(returncode=0, stderr=b"")
 
     with patch("curlguard.wrapper.subprocess.run", side_effect=fake_run):
-        temp_path = wrapper._download_to_temp(["-fsSL", "-o", "out.sh", "https://example.com/file.sh"])
+        temp_path = wrapper._download_to_temp(
+            ["-fsSL", "-o", "out.sh", "https://example.com/file.sh"]
+        )
 
     assert temp_path.read_text() == "downloaded"
     wrapper._logger.close()
 
 
-def test_wrapper_warn_mode_allows_scan_failure(temp_config, mock_ssl_detector, tmp_path):
+def test_wrapper_warn_mode_allows_scan_failure(
+    temp_config, mock_ssl_detector, tmp_path
+):
+    temp_config.scan_failure_mode = "warn"
     scanner = MagicMock()
     scanner.scan_file.return_value = ScanResult(
         clean=True,
@@ -186,7 +197,9 @@ def test_wrapper_warn_mode_allows_scan_failure(temp_config, mock_ssl_detector, t
     assert event["user_decision"] == "allow"
 
 
-def test_wrapper_clean_download_reports_saved_location(temp_config, mock_ssl_detector, tmp_path, capsys):
+def test_wrapper_clean_download_reports_saved_location(
+    temp_config, mock_ssl_detector, tmp_path, capsys
+):
     scanner = MagicMock()
     scanner.scan_file.return_value = ScanResult(
         clean=True,
@@ -214,7 +227,9 @@ def test_wrapper_clean_download_reports_saved_location(temp_config, mock_ssl_det
     assert f"sha256={checksum}" in captured.err
 
 
-def test_wrapper_block_mode_blocks_scan_failure(temp_config, mock_ssl_detector, tmp_path):
+def test_wrapper_block_mode_blocks_scan_failure(
+    temp_config, mock_ssl_detector, tmp_path
+):
     temp_config.scan_failure_mode = "block"
     scanner = MagicMock()
     scanner.scan_file.return_value = ScanResult(
@@ -243,7 +258,9 @@ def test_wrapper_block_mode_blocks_scan_failure(temp_config, mock_ssl_detector, 
     assert event["user_decision"] == "block"
 
 
-def test_wrapper_quarantine_decision_moves_file(temp_config, mock_ssl_detector, tmp_path, monkeypatch):
+def test_wrapper_quarantine_decision_moves_file(
+    temp_config, mock_ssl_detector, tmp_path, monkeypatch
+):
     scanner = MagicMock()
     scanner.scan_file.return_value = ScanResult(
         clean=False,
@@ -259,11 +276,13 @@ def test_wrapper_quarantine_decision_moves_file(temp_config, mock_ssl_detector, 
     downloaded.write_text("evil")
     wrapper._download_to_temp = lambda args: downloaded
 
-    fake_tui = types.ModuleType("curlguard.tui")
-    fake_tui.prompt_user = lambda *args, **kwargs: "quarantine"
-    monkeypatch.setitem(sys.modules, "curlguard.tui", fake_tui)
+    monkeypatch.setattr(
+        "curlguard.review.prompt_user", lambda *args, **kwargs: "quarantine"
+    )
 
-    exit_code = wrapper.dispatch(["https://evil.example/payload.sh", "-o", str(tmp_path / "ignored.sh")])
+    exit_code = wrapper.dispatch(
+        ["https://evil.example/payload.sh", "-o", str(tmp_path / "ignored.sh")]
+    )
     logger.close()
 
     quarantined = list(temp_config.quarantine_dir.glob("*"))
@@ -290,9 +309,7 @@ def test_wrapper_allowed_flagged_download_reports_saved_location(
     downloaded.write_text("allowed")
     wrapper._download_to_temp = lambda args: downloaded
 
-    fake_tui = types.ModuleType("curlguard.tui")
-    fake_tui.prompt_user = lambda *args, **kwargs: "allow"
-    monkeypatch.setitem(sys.modules, "curlguard.tui", fake_tui)
+    monkeypatch.setattr("curlguard.review.prompt_user", lambda *args, **kwargs: "allow")
 
     output = tmp_path / "allowed.sh"
     exit_code = wrapper.dispatch(["https://evil.example/payload.sh", "-o", str(output)])
@@ -308,8 +325,15 @@ def test_wrapper_allowed_flagged_download_reports_saved_location(
 
 
 def test_wrapper_unsupported_requests_passthrough(temp_config, mock_ssl_detector):
-    wrapper = CurlWrapper(temp_config, MagicMock(), AuditLogger(temp_config.log_path), mock_ssl_detector)
-    assert wrapper._should_intercept(["-I", "https://example.com"], ["https://example.com"]) is False
+    wrapper = CurlWrapper(
+        temp_config, MagicMock(), AuditLogger(temp_config.log_path), mock_ssl_detector
+    )
+    assert (
+        wrapper._should_intercept(
+            ["-I", "https://example.com"], ["https://example.com"]
+        )
+        is False
+    )
     wrapper._logger.close()
 
 
@@ -326,7 +350,9 @@ def test_wrapper_can_block_ssl_bypass(temp_config, tmp_path):
     )
     wrapper = CurlWrapper(temp_config, scanner, logger, ssl_detector)
 
-    exit_code = wrapper.dispatch(["https://example.com/file.sh", "-o", str(tmp_path / "out.sh")])
+    exit_code = wrapper.dispatch(
+        ["https://example.com/file.sh", "-o", str(tmp_path / "out.sh")]
+    )
     logger.close()
 
     assert exit_code == 1

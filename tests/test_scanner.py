@@ -1,9 +1,9 @@
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-import pytest
-from curlguard.scanner import YaraScanner, ScanResult
+from curlguard.scanner import ScanResult, YaraScanner
 
 
 def test_scanner_import():
@@ -15,6 +15,12 @@ def test_scanner_clean_content():
     scanner = YaraScanner([])
     result = scanner.scan(b"#!/bin/bash\necho hello world")
     assert result.clean is True
+
+
+def test_scanner_always_discovers_bundled_rules():
+    scanner = YaraScanner([])
+    if scanner._yara_available:
+        assert scanner.get_rules_count() >= 1
 
 
 def test_scanresult_dataclass():

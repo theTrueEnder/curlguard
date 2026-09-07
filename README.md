@@ -28,7 +28,8 @@ They are also a natural target for watering-hole and supply-chain attacks:
 - scans content with built-in, user, and auto-updated YARA rules
 - warns on insecure transport and downgraded TLS options
 - opens an interactive terminal review prompt for flagged content
-- defaults to context-aware pass-through for package managers and unattended automation
+- installs without replacing the operating system's `curl`
+- scans supported non-interactive downloads and blocks flagged content when no review terminal exists
 - logs activity to JSON Lines audit logs
 - supports configurable behavior when scanning is unavailable
 
@@ -37,13 +38,13 @@ They are also a natural target for watering-hole and supply-chain attacks:
 Best-supported path:
 
 - Linux
-- interactive shell-driven downloads
+- interactive and unattended supported downloads
 - single-URL downloads
 - installer-style commands
 - `curl ... | bash`
 - `curl ... -o file`
 
-Requests outside that path, along with package-manager and non-interactive automation contexts, are passed through to the real `curl` by default.
+Requests outside that path are passed through unchanged. Known package-manager ancestors are also passed through when the optional curl shim is active. Non-interactive supported downloads are still scanned.
 
 ### Known pass-through cases
 
@@ -54,10 +55,8 @@ The wrapper currently defers to the real `curl` for flows such as:
 - `-F`, `--form`
 - `-d`, `--data`, `--data-raw`, `--data-binary`, `--data-urlencode`
 - `--next`
-- `-O`, `--remote-name`
 - `-J`, `--remote-header-name`
 - multi-URL invocations
-- non-interactive executions without a terminal
 - known package-manager and unattended-upgrade ancestors such as `apt`, `apt-get`, `dnf`, `yum`, `pacman`, `snap`, and `cloud-init`
 
 ## How it works
@@ -115,10 +114,18 @@ If no interactive terminal is available, `curlguard` blocks the download instead
 git clone https://github.com/thetrueender/curlguard.git
 cd curlguard
 bash scripts/install-peruser.sh
-source ~/.bashrc
 ```
 
-This installs the wrapper at `~/.local/bin/curl` and keeps the real system `curl` in place.
+This creates an isolated virtual environment and installs `curlguard` at `~/.local/bin/curlguard`. It does not replace or shadow `curl`.
+
+To install an optional `curl` shim, use:
+
+```bash
+bash scripts/install-peruser.sh --with-curl-shim
+export PATH="$HOME/.local/libexec/curlguard/bin:$PATH"
+```
+
+Only add the shim directory to interactive shell sessions where interception is wanted. Package managers continue to use `/usr/bin/curl`.
 
 ### System-wide install
 
@@ -128,21 +135,24 @@ cd curlguard
 sudo bash scripts/install-systemwide.sh
 ```
 
-This replaces `/usr/bin/curl` with the wrapper and stores the original binary as `/usr/bin/curl.real`.
+This installs an isolated environment under `/opt/curlguard` and exposes `/usr/local/bin/curlguard`. It never modifies `/usr/bin/curl` or the system Python environment.
 
-System-wide installs are compatibility-biased by default: package-manager and unattended automation contexts pass through to the real `curl` so security updates and similar maintenance jobs are not blocked.
+Administrators can add `--with-curl-shim` to create an optional shim under `/usr/local/libexec/curlguard/bin`. That directory is deliberately not added to the global `PATH`.
+
+When upgrading from an older per-user installation, the installer disables a recognized `~/.local/bin/curl` legacy shim and preserves it as `curl.curlguard-legacy`. If an older installation replaced `/usr/bin/curl`, restore the distro-owned package first; the modern system installer refuses to proceed while that legacy replacement is active.
 
 ### Verify
 
 ```bash
-which curl
+command -v curlguard
 curlguard --help
 ```
 
 Expected result:
 
-- per-user install: `~/.local/bin/curl`
-- system-wide install: `/usr/bin/curl`
+- per-user install: `~/.local/bin/curlguard`
+- system-wide install: `/usr/local/bin/curlguard`
+- `/usr/bin/curl` remains owned and managed by the operating system
 
 
 ## Testing
@@ -158,7 +168,7 @@ python3 examples/true_positive/start_server.py
 In another terminal:
 
 ```bash
-curl http://127.0.0.1:8888/test.sh | bash
+curlguard http://127.0.0.1:8888/test.sh | bash
 ```
 
 Expected behavior:
@@ -167,12 +177,7 @@ Expected behavior:
 - an interactive review prompt opens
 - choosing `Block` or `Quarantine` prevents the script from reaching `bash`
 
-Important:
-
-- the command above only exercises `curlguard` if your shell `curl` is already the installed wrapper
-- preflight with `which curl`; it should resolve to the wrapper path described in the install section
-- if you are running from the repo without installing the wrapper first, use `python3 -m curlguard http://127.0.0.1:8888/test.sh | bash`
-- if you only see normal curl progress output and no `curlguard:` messages, plain curl handled the request and the test is not exercising the guard path
+If you are running from the repository without installing first, use `PYTHONPATH=src python3 -m curlguard http://127.0.0.1:8888/test.sh | bash`. If you explicitly activated the optional curl shim, the equivalent `curl ... | bash` command also exercises curlguard.
 
 This project is Linux-first. For Windows development, run these flows in WSL or another Linux shell rather than PowerShell-native `curl`.
 
@@ -187,7 +192,7 @@ python3 examples/true_negative/start_server.py
 In another terminal:
 
 ```bash
-curl http://127.0.0.1:8889/install.sh -o /tmp/curlguard-demo.sh
+curlguard http://127.0.0.1:8889/install.sh -o /tmp/curlguard-demo.sh
 ```
 
 Expected behavior:
@@ -227,17 +232,13 @@ The automated suite currently covers:
 
 - Python 3.10+
 - `yara-python`
-- `textual`
-- `requests`
-- `httpx`
+- `textual` for the optional TUI; the console review interface remains available without it
 
-The install scripts try to use distro packages for `python3-yara`, `python3-requests`, and `python3-httpx`, and `pip` for `textual`.
-
-On Debian/Ubuntu-style systems such as WSL, the install scripts also try to bootstrap `pip` with `ensurepip` or `apt-get install python3-pip python3-venv python3-setuptools` when `python3 -m pip` is missing.
+The install scripts use a dedicated virtual environment. They never invoke `apt`, install into system Python, or use `--break-system-packages`. Install Python venv support through your OS package manager before running the script if it is unavailable.
 
 ## Detection sources
 
-Rules are loaded from these locations, in this order:
+Rules are loaded independently from these locations, so one invalid optional rule file cannot disable the bundled rules:
 
 1. built-in rules in `src/curlguard/rules/foundation.yar`
 2. user rules in `~/.curlguard/rules/` or `/var/lib/curlguard/rules/`
@@ -282,7 +283,7 @@ export CURLGUARD_SCAN_FAILURE_MODE=warn
 export CURLGUARD_SCAN_FAILURE_MODE=block
 ```
 
-The default is `warn`.
+The default is `block`. Set `warn` explicitly only when availability is more important than enforcing a completed scan.
 
 ## Audit logging
 
@@ -315,35 +316,41 @@ All runtime configuration is currently environment-variable based.
 
 | Variable | Default | Description |
 |---|---|---|
-| `CURLGUARD_MODE` | auto-detect | `per-user` or `system-wide` |
+| `CURLGUARD_MODE` | `per-user` | `per-user` or an explicitly administered `system-wide` state layout |
 | `CURLGUARD_LOG_PATH` | mode-specific | Override audit log path |
 | `CURLGUARD_RULES_DIR` | mode-specific | Colon-separated rule directories |
 | `CURLGUARD_QUARANTINE` | mode-specific | Override quarantine directory |
 | `CURLGUARD_REAL_CURL_PATH` | auto-detect | Override the real curl binary path |
 | `CURLGUARD_REVIEW_INTERFACE` | `tui` | Review UI for flagged content: `tui` or `console` |
 | `CURLGUARD_UPDATE_URL` | unset | URL used for auto-updated rules |
+| `CURLGUARD_UPDATE_SHA256` | unset | Optional lowercase SHA-256 pin for the downloaded rule file |
 | `CURLGUARD_UPDATE_INTERVAL_HOURS` | `24` | Rule update interval |
 | `CURLGUARD_SSL_WARN_ONLY` | `true` | Warn on TLS bypass unless a blocking-severity case is configured and this is `false` |
-| `CURLGUARD_SCAN_FAILURE_MODE` | `warn` | `warn` to deliver with warning, `block` to fail closed when scanning is unavailable |
-| `CURLGUARD_CONTEXT_AWARE_BYPASS` | `true` | Pass through non-interactive and known automation/package-manager contexts instead of intercepting them |
+| `CURLGUARD_SCAN_FAILURE_MODE` | `block` | `warn` to deliver with warning, `block` to fail closed when scanning is unavailable |
+| `CURLGUARD_CONTEXT_AWARE_BYPASS` | `true` | Pass through known package-manager ancestors when a curl shim is active |
 | `CURLGUARD_FORCE_INTERCEPT` | `false` | Override context-aware bypass for the current process and force interception |
 | `CURLGUARD_PASSTHROUGH_PROCESSES` | built-in list | Colon- or comma-separated parent process names that should bypass interception |
+| `CURLGUARD_MAX_DOWNLOAD_BYTES` | `104857600` | Maximum guarded response size in bytes |
+| `CURLGUARD_SCAN_TIMEOUT_SECONDS` | `10` | YARA timeout per loaded rule file |
 
 ## Uninstall
 
 ### Per-user
 
 ```bash
-python3 -c "import sys; sys.path.insert(0, 'src'); from curlguard.curl_manager import CurlManager; CurlManager('per-user').uninstall()"
-rm -rf ~/.curlguard ~/.local/bin/curl
+rm ~/.local/bin/curlguard
+rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/curlguard"
+# If the optional shim was installed:
+rm -rf ~/.local/libexec/curlguard
 ```
 
 ### System-wide
 
 ```bash
-sudo python3 -c "import sys; sys.path.insert(0, 'src'); from curlguard.curl_manager import CurlManager; CurlManager('system-wide').uninstall()"
-sudo rm -rf /var/lib/curlguard /var/log/curlguard /etc/profile.d/curlguard.sh
-sudo pip uninstall curlguard
+sudo rm /usr/local/bin/curlguard
+sudo rm -rf /opt/curlguard
+# If the optional shim was installed:
+sudo rm -rf /usr/local/libexec/curlguard
 ```
 
 ## Status

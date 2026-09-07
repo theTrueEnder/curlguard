@@ -25,7 +25,9 @@ def test_console_prompt_accepts_quarantine_after_retry(monkeypatch):
         lambda: (reader, writer),
     )
 
-    decision = prompt_user(DummyScanResult(), "https://example.com/install.sh", ssl_warn=True)
+    decision = prompt_user(
+        DummyScanResult(), "https://example.com/install.sh", ssl_warn=True
+    )
 
     assert decision == "quarantine"
     output = writer.getvalue()

@@ -6,7 +6,9 @@ If you find a security issue in curlguard, please report it responsibly.
 
 **Do NOT** open a public GitHub issue for security vulnerabilities.
 
-Email: security@example.com (replace with actual contact once established)
+Use the repository's private
+[Security → Report a vulnerability](https://github.com/theTrueEnder/curlguard/security/advisories/new)
+workflow.
 
 Include:
 - Description of the vulnerability

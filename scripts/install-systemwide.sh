@@ -3,106 +3,64 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+INSTALL_ROOT="/opt/curlguard"
+VENV_DIR="$INSTALL_ROOT/venv"
+LAUNCHER="/usr/local/bin/curlguard"
+WITH_SHIM=false
 
-step() {
-    printf '\n[%s] %s\n' "$1" "$2"
+if [ "${1:-}" = "--with-curl-shim" ]; then
+    WITH_SHIM=true
+elif [ "$#" -ne 0 ]; then
+    printf 'Usage: %s [--with-curl-shim]\n' "$0" >&2
+    exit 2
+fi
+
+if [ "$(id -u)" -ne 0 ]; then
+    printf 'ERROR: Run this installer as root (for example with sudo).\n' >&2
+    exit 1
+fi
+if [ -f /usr/bin/curl.real ] && grep -q 'exec curlguard' /usr/bin/curl 2>/dev/null; then
+    printf 'ERROR: A legacy curlguard replacement is active at /usr/bin/curl.\n' >&2
+    printf 'Restore the OS-owned curl with your package manager before installing this version.\n' >&2
+    exit 1
+fi
+command -v python3 >/dev/null 2>&1 || {
+    printf 'ERROR: Python 3.10 or newer is required.\n' >&2
+    exit 1
 }
-
-info() {
-    printf '  - %s\n' "$1"
-}
-
-warn() {
-    printf 'WARNING: %s\n' "$1" >&2
-}
-
-die() {
-    printf 'ERROR: %s\n' "$1" >&2
+python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' || {
+    printf 'ERROR: Python 3.10 or newer is required.\n' >&2
     exit 1
 }
 
-if [ "$(id -u)" -eq 0 ]; then
-    SUDO=""
-elif command -v sudo >/dev/null 2>&1; then
-    SUDO="sudo"
+printf '[1/3] Creating isolated environment at %s\n' "$VENV_DIR"
+mkdir -p "$INSTALL_ROOT"
+python3 -m venv "$VENV_DIR" || {
+    printf 'ERROR: Python venv support is required; install it using your OS package manager.\n' >&2
+    exit 1
+}
+
+printf '[2/3] Installing curlguard without modifying system Python\n'
+if ! "$VENV_DIR/bin/python" -m pip install "$PROJECT_DIR[tui]"; then
+    printf 'WARNING: TUI dependencies were unavailable; installing console-only curlguard.\n' >&2
+    "$VENV_DIR/bin/python" -m pip install "$PROJECT_DIR"
+fi
+
+if [ -e "$LAUNCHER" ] || [ -L "$LAUNCHER" ]; then
+    if [ ! -L "$LAUNCHER" ] || [ "$(readlink "$LAUNCHER")" != "$VENV_DIR/bin/curlguard" ]; then
+        printf 'ERROR: Refusing to replace unmanaged file: %s\n' "$LAUNCHER" >&2
+        exit 1
+    fi
+fi
+ln -sfn "$VENV_DIR/bin/curlguard" "$LAUNCHER"
+
+printf '[3/3] Finalizing installation\n'
+if [ "$WITH_SHIM" = true ]; then
+    "$VENV_DIR/bin/python" -c 'from curlguard.curl_manager import CurlManager; CurlManager("system-wide").install()'
+    printf 'Optional shim installed at /usr/local/libexec/curlguard/bin/curl.\n'
+    printf 'Administrators may opt selected interactive shells into that directory via PATH.\n'
 else
-    die "System-wide installation requires root or sudo."
+    printf 'No curl shim was installed. /usr/bin/curl was not modified.\n'
 fi
 
-command -v python3 >/dev/null 2>&1 || die "Python 3 is required."
-
-step "1/5" "Preparing system directories"
-$SUDO mkdir -p /var/lib/curlguard/rules /var/lib/curlguard/quarantine /var/log/curlguard
-if [ -d "$PROJECT_DIR/src/curlguard/rules" ]; then
-    $SUDO cp "$PROJECT_DIR"/src/curlguard/rules/*.yar /var/lib/curlguard/rules/ 2>/dev/null || true
-fi
-info "Rules directory: /var/lib/curlguard/rules"
-info "Quarantine directory: /var/lib/curlguard/quarantine"
-info "Audit log directory: /var/log/curlguard"
-
-step "2/5" "Installing Python dependencies"
-if command -v apt-get >/dev/null 2>&1; then
-    info "Attempting distro packages for yara-python, requests, and httpx"
-    $SUDO apt-get install -y python3-yara python3-requests python3-httpx 2>/dev/null || \
-        warn "Could not install python3-yara/python3-requests/python3-httpx with apt-get."
-else
-    warn "apt-get not found; continuing without distro dependency installation."
-fi
-
-info "Installing Textual via pip"
-$SUDO python3 -m pip install --break-system-packages 'textual>=0.50.0' 2>/dev/null || \
-    $SUDO python3 -m pip install 'textual>=0.50.0' 2>/dev/null || \
-    die "Could not install Textual. Try: sudo python3 -m pip install --break-system-packages 'textual>=0.50.0'"
-
-step "3/5" "Installing the curlguard package"
-$SUDO python3 -m pip install --break-system-packages -e "$PROJECT_DIR" 2>/dev/null || \
-    $SUDO python3 -m pip install -e "$PROJECT_DIR" 2>/dev/null || \
-    die "Could not install curlguard. Try: sudo python3 -m pip install --break-system-packages -e '$PROJECT_DIR'"
-
-step "4/5" "Installing the curl wrapper"
-$SUDO python3 -c "
-import sys
-sys.path.insert(0, '$PROJECT_DIR/src')
-from curlguard.curl_manager import CurlManager
-CurlManager('system-wide').install()
-print('Installed wrapper at /usr/bin/curl')
-"
-
-step "5/5" "Writing environment configuration"
-PROFILE_FILE="/etc/profile.d/curlguard.sh"
-if [ ! -f "$PROFILE_FILE" ]; then
-    $SUDO tee "$PROFILE_FILE" > /dev/null <<'PROFILE'
-export CURLGUARD_MODE=system-wide
-PROFILE
-    info "Created $PROFILE_FILE"
-else
-    info "$PROFILE_FILE already exists"
-fi
-
-cat <<EOF
-
-curlguard system-wide installation complete.
-
-Runtime locations:
-  - Audit log:   /var/log/curlguard/audit.log
-  - Rules:       /var/lib/curlguard/rules
-  - Quarantine:  /var/lib/curlguard/quarantine
-
-Next steps:
-  1. Start a new shell or run:
-       source /etc/profile
-  2. Verify that the wrapper is active:
-       which curl
-       curlguard --help
-
-Recommended checks:
-  - Suspicious sample:
-      python3 examples/true_positive/start_server.py
-      curl http://127.0.0.1:8888/test.sh | bash
-    Expected result: curlguard opens an interactive review prompt.
-
-  - Clean sample:
-      python3 examples/true_negative/start_server.py
-      curl http://127.0.0.1:8889/install.sh -o /tmp/curlguard-demo.sh
-    Expected result: the file downloads without a malware prompt.
-EOF
+printf '\nInstallation complete: %s\n' "$LAUNCHER"

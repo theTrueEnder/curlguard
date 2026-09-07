@@ -3,123 +3,71 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-CURLGUARD_DIR="$HOME/.curlguard"
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+VENV_DIR="$DATA_HOME/curlguard/venv"
+BIN_DIR="$HOME/.local/bin"
+WITH_SHIM=false
 
-step() {
-    printf '\n[%s] %s\n' "$1" "$2"
+if [ "${1:-}" = "--with-curl-shim" ]; then
+    WITH_SHIM=true
+elif [ "$#" -ne 0 ]; then
+    printf 'Usage: %s [--with-curl-shim]\n' "$0" >&2
+    exit 2
+fi
+
+command -v python3 >/dev/null 2>&1 || {
+    printf 'ERROR: Python 3.10 or newer is required.\n' >&2
+    exit 1
 }
-
-info() {
-    printf '  - %s\n' "$1"
-}
-
-warn() {
-    printf 'WARNING: %s\n' "$1" >&2
-}
-
-die() {
-    printf 'ERROR: %s\n' "$1" >&2
+python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' || {
+    printf 'ERROR: Python 3.10 or newer is required.\n' >&2
     exit 1
 }
 
-pick_shell_rc() {
-    if [ -f "$HOME/.bashrc" ]; then
-        printf '%s\n' "$HOME/.bashrc"
-        return
+LEGACY_SHIM="$HOME/.local/bin/curl"
+if [ -f "$LEGACY_SHIM" ] && grep -q 'CURLGUARD_REAL_CURL_PATH=' "$LEGACY_SHIM" \
+   && grep -q 'exec curlguard' "$LEGACY_SHIM"; then
+    LEGACY_BACKUP="$LEGACY_SHIM.curlguard-legacy"
+    if [ -e "$LEGACY_BACKUP" ]; then
+        printf 'ERROR: Legacy backup already exists: %s\n' "$LEGACY_BACKUP" >&2
+        exit 1
     fi
-    if [ -f "$HOME/.zshrc" ]; then
-        printf '%s\n' "$HOME/.zshrc"
-        return
-    fi
-}
-
-install_textual() {
-    python3 -m pip install --user 'textual>=0.50.0' 2>/dev/null && return 0
-    python3 -m pip install --user --break-system-packages 'textual>=0.50.0' 2>/dev/null && return 0
-    python3 -m pip install --break-system-packages 'textual>=0.50.0' 2>/dev/null && return 0
-    return 1
-}
-
-install_project() {
-    python3 -m pip install --user -e "$PROJECT_DIR" 2>/dev/null && return 0
-    python3 -m pip install --user --break-system-packages -e "$PROJECT_DIR" 2>/dev/null && return 0
-    python3 -m pip install --break-system-packages -e "$PROJECT_DIR" 2>/dev/null && return 0
-    return 1
-}
-
-command -v python3 >/dev/null 2>&1 || die "Python 3 is required."
-
-step "1/5" "Preparing curlguard directories"
-mkdir -p "$CURLGUARD_DIR/rules" "$CURLGUARD_DIR/quarantine"
-if [ -d "$PROJECT_DIR/src/curlguard/rules" ]; then
-    cp "$PROJECT_DIR"/src/curlguard/rules/*.yar "$CURLGUARD_DIR/rules/" 2>/dev/null || true
+    mv "$LEGACY_SHIM" "$LEGACY_BACKUP"
+    printf 'Disabled legacy PATH-wide curl shim; backup: %s\n' "$LEGACY_BACKUP"
 fi
-info "Rules directory: $CURLGUARD_DIR/rules"
-info "Quarantine directory: $CURLGUARD_DIR/quarantine"
 
-step "2/5" "Installing Python dependencies"
-if command -v apt-get >/dev/null 2>&1; then
-    info "Attempting distro packages for yara-python, requests, and httpx"
-    sudo apt-get install -y python3-yara python3-requests python3-httpx 2>/dev/null || \
-        apt-get install -y python3-yara python3-requests python3-httpx 2>/dev/null || \
-        warn "Could not install python3-yara/python3-requests/python3-httpx with apt-get."
+printf '[1/3] Creating isolated environment at %s\n' "$VENV_DIR"
+python3 -m venv "$VENV_DIR" || {
+    printf 'ERROR: Python venv support is required; install it using your OS package manager.\n' >&2
+    exit 1
+}
+
+printf '[2/3] Installing curlguard without modifying system Python\n'
+if ! "$VENV_DIR/bin/python" -m pip install "$PROJECT_DIR[tui]"; then
+    printf 'WARNING: TUI dependencies were unavailable; installing console-only curlguard.\n' >&2
+    "$VENV_DIR/bin/python" -m pip install "$PROJECT_DIR"
+fi
+
+mkdir -p "$BIN_DIR"
+LAUNCHER="$BIN_DIR/curlguard"
+if [ -e "$LAUNCHER" ] || [ -L "$LAUNCHER" ]; then
+    if [ ! -L "$LAUNCHER" ] || [ "$(readlink "$LAUNCHER")" != "$VENV_DIR/bin/curlguard" ]; then
+        printf 'ERROR: Refusing to replace unmanaged file: %s\n' "$LAUNCHER" >&2
+        exit 1
+    fi
+fi
+ln -sfn "$VENV_DIR/bin/curlguard" "$LAUNCHER"
+
+printf '[3/3] Finalizing installation\n'
+if [ "$WITH_SHIM" = true ]; then
+    "$VENV_DIR/bin/python" -c 'from curlguard.curl_manager import CurlManager; CurlManager("per-user").install()'
+    printf 'Optional curl shim installed at ~/.local/libexec/curlguard/bin/curl\n'
+    printf 'Activate it only in an interactive shell with:\n'
+    printf '  export PATH="$HOME/.local/libexec/curlguard/bin:$PATH"\n'
 else
-    warn "apt-get not found; continuing without distro dependency installation."
+    printf 'No curl shim was installed; package managers and automation are unaffected.\n'
 fi
 
-info "Installing Textual via pip"
-install_textual || die "Could not install Textual. Try: python3 -m pip install --user --break-system-packages 'textual>=0.50.0'"
-
-step "3/5" "Installing the curlguard package"
-install_project || die "Could not install curlguard. Try: python3 -m pip install --user --break-system-packages -e '$PROJECT_DIR'"
-
-step "4/5" "Installing the curl wrapper"
-python3 -c "
-import sys
-sys.path.insert(0, '$PROJECT_DIR/src')
-from curlguard.curl_manager import CurlManager
-CurlManager('per-user').install()
-print('Installed wrapper at ~/.local/bin/curl')
-"
-
-step "5/5" "Updating shell configuration"
-SHELL_RC="$(pick_shell_rc || true)"
-RELOAD_TARGET="${SHELL_RC:-your shell startup file}"
-if [ -n "${SHELL_RC:-}" ]; then
-    if ! grep -q 'CURLGUARD_MODE=per-user' "$SHELL_RC" 2>/dev/null; then
-        {
-            echo
-            echo '# curlguard'
-            echo 'export CURLGUARD_MODE=per-user'
-            echo 'export PATH="$HOME/.local/bin:$PATH"'
-        } >> "$SHELL_RC"
-        info "Updated $SHELL_RC"
-    else
-        info "$SHELL_RC already contains curlguard settings"
-    fi
-else
-    warn "No shell startup file was detected. Add ~/.local/bin to PATH and export CURLGUARD_MODE=per-user manually."
-fi
-
-cat <<EOF
-
-curlguard per-user installation complete.
-
-Next steps:
-  1. Reload your shell:
-       source $RELOAD_TARGET
-  2. Verify that the wrapper is active:
-       which curl
-       curlguard --help
-
-Recommended checks:
-  - Suspicious sample:
-      python3 examples/true_positive/start_server.py
-      curl http://127.0.0.1:8888/test.sh | bash
-    Expected result: curlguard opens an interactive review prompt.
-
-  - Clean sample:
-      python3 examples/true_negative/start_server.py
-      curl http://127.0.0.1:8889/install.sh -o /tmp/curlguard-demo.sh
-    Expected result: the file downloads without a malware prompt.
-EOF
+printf '\nInstallation complete. Ensure ~/.local/bin is on PATH, then run:\n'
+printf '  curlguard --version\n'
+printf '  curlguard https://example.com/install.sh\n'
