@@ -31,7 +31,7 @@ where = ["src"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
-addopts = "-v"
+addopts = "-q --tb=short -ra"
 
 [tool.ruff]
 line-length = 88

@@ -112,7 +112,9 @@ class CurlGuardTUI(App[int]):
             yield Button("Block [B]", id="block_btn", variant="error")
             yield Button("Quarantine [Q]", id="quarantine_btn", variant="warning")
             yield Button("Allow [A]", id="allow_btn", variant="success")
-        yield Static("Keys: [B] block   [Q] quarantine   [A] allow   [Ctrl+C] cancel", id="keys")
+        yield Static(
+            "Keys: [B] block   [Q] quarantine   [A] allow   [Ctrl+C] cancel", id="keys"
+        )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "block_btn":
@@ -170,9 +172,10 @@ def _launch_tui_subprocess(rules: list[str], url: str, ssl_warn: bool) -> int:
     if ssl_warn:
         cmd.append("--ssl-warn")
 
-    with tty_path.open("r", encoding="utf-8", errors="ignore") as tty_in, tty_path.open(
-        "w", encoding="utf-8", errors="ignore"
-    ) as tty_out:
+    with (
+        tty_path.open("r", encoding="utf-8", errors="ignore") as tty_in,
+        tty_path.open("w", encoding="utf-8", errors="ignore") as tty_out,
+    ):
         result = subprocess.run(cmd, stdin=tty_in, stdout=tty_out, stderr=tty_out)
 
     return result.returncode
@@ -200,7 +203,9 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry point for the standalone TUI subprocess."""
 
     parser = argparse.ArgumentParser(prog="python -m curlguard.tui")
-    parser.add_argument("--rules-json", required=True, help="JSON array of matched rule names")
+    parser.add_argument(
+        "--rules-json", required=True, help="JSON array of matched rule names"
+    )
     parser.add_argument("--url", required=True, help="The URL that was scanned")
     parser.add_argument(
         "--ssl-warn",

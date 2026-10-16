@@ -1,0 +1,33 @@
+name: Linux compatibility
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - ubuntu: '22.04'
+            python: '3.10'
+            curl: '7.81.'
+          - ubuntu: '24.04'
+            python: '3.12'
+            curl: '8.5.'
+    container: ubuntu:${{ matrix.ubuntu }}
+    steps:
+      - name: Install distro runtime
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y git curl ca-certificates python3 python3-venv build-essential libyara-dev openssl
+      - uses: actions/checkout@v4
+      - name: Verify matrix versions and install
+        run: |
+          python3 --version | grep '${{ matrix.python }}'
+          curl --version | head -1 | grep '${{ matrix.curl }}'
+          python3 -m venv /tmp/test-env
+          /tmp/test-env/bin/pip install -e '.[dev]'
+      - name: Lint and test with real YARA
+        run: |
+          /tmp/test-env/bin/ruff check src tests scripts/validate-wsl-updates.py
+          /tmp/test-env/bin/ruff format --check src tests scripts/validate-wsl-updates.py
+          /tmp/test-env/bin/python -c 'import yara; print(yara.__version__)'
+          /tmp/test-env/bin/python -m pytest

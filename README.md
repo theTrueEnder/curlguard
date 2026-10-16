@@ -46,6 +46,12 @@ Best-supported path:
 
 Requests outside that path are passed through to the real `curl`.
 
+Update workflows now include scanned resume, conditional/ETag requests, and common
+status/timing `--write-out` formats. Unsupported features are audited as unscanned;
+set `CURLGUARD_UNSUPPORTED_POLICY=block` to reject them before network activity.
+See [update reliability and failure handling](docs/update-reliability.md) for the
+supported feature boundary, migration, configuration, and validation details.
+
 ### Known pass-through cases
 
 The wrapper currently defers to the real `curl` for flows such as:
@@ -187,7 +193,10 @@ cd curlguard
 sudo bash scripts/install-systemwide.sh
 ```
 
-This replaces `/usr/bin/curl` with the wrapper and stores the original binary as `/usr/bin/curl.real`.
+This installs the wrapper at `/usr/local/bin/curl` and leaves the package-owned
+`/usr/bin/curl` untouched. Absolute `/usr/bin/curl` calls bypass scanning.
+Legacy installations with `/usr/bin/curl.real` require the installer's explicit
+`--migrate-legacy` mode; it reinstalls and verifies the current distro package.
 
 ### Verify
 
@@ -199,7 +208,7 @@ curlguard --help
 Expected result:
 
 - per-user install: `~/.local/bin/curl`
-- system-wide install: `/usr/bin/curl`
+- system-wide install: `/usr/local/bin/curl`
 
 
 ## Testing
@@ -258,7 +267,7 @@ bash examples/known_malware/test_detection.sh
 ### Automated tests
 
 ```bash
-pytest -v
+python -m pytest
 ```
 
 The automated suite currently covers:
@@ -336,10 +345,10 @@ The default is `warn`.
 
 Every invocation handled by the wrapper is written as JSON Lines.
 
-Default log locations:
+Default log locations (regular users use their own state even with the system wrapper):
 
 - per-user: `~/.curlguard/audit.log`
-- system-wide: `/var/log/curlguard/audit.log`
+- system-wide as root: `/var/log/curlguard/audit.log`
 
 Example entries:
 
@@ -375,6 +384,9 @@ All runtime configuration is currently environment-variable based.
 | `CURLGUARD_SSL_WARN_ONLY` | `true` | Warn on TLS bypass unless a blocking-severity case is configured and this is `false` |
 | `CURLGUARD_MATCH_POLICY` | `quarantine` | `quarantine`, `prompt`, `block`, or `allow` when suspicious content is detected |
 | `CURLGUARD_SCAN_FAILURE_MODE` | `warn` | `warn` to deliver with warning, `block` to fail closed when scanning is unavailable |
+| `CURLGUARD_UNSUPPORTED_POLICY` | `passthrough` | Pass unsupported commands unchanged and audit as unscanned, or `block` before network activity |
+| `CURLGUARD_SCAN_TIMEOUT_SECONDS` | `10` | Positive YARA scan timeout |
+| `CURLGUARD_MAX_SCAN_BYTES` | `268435456` | Positive maximum scannable payload size; exceeding it invokes scan-failure policy |
 | `CURLGUARD_TRUST_FILE` | mode-specific | Optional JSON trust file with `hosts` and `sha256` arrays |
 | `CURLGUARD_TRUSTED_HOSTS` | unset | Comma-separated trusted hosts that can auto-allow flagged content |
 | `CURLGUARD_TRUSTED_SHA256` | unset | Comma-separated trusted SHA-256 checksums that can auto-allow flagged content |
@@ -388,6 +400,11 @@ All runtime configuration is currently environment-variable based.
 - `11` — quarantined due to suspicious content
 - `12` — blocked by SSL/TLS policy
 - `13` — blocked because scanning failed and fail-closed mode is enabled
+- `14` — unsupported request blocked
+- `15` — invalid configuration
+- `16` — internal, preparation, validation, or delivery failure
+
+Real curl failure codes and conventional `128 + signal` results are preserved.
 
 ## Uninstall
 
@@ -405,6 +422,9 @@ sudo python3 -c "import sys; sys.path.insert(0, 'src'); from curlguard.curl_mana
 sudo rm -rf /var/lib/curlguard /var/log/curlguard /etc/profile.d/curlguard.sh
 sudo pip uninstall curlguard
 ```
+
+The current uninstaller removes only its owned PATH wrapper. It refuses unresolved
+legacy installations and never restores a stale `/usr/bin/curl.real` binary.
 
 ## Status
 

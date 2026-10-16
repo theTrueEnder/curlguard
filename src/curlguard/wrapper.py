@@ -1,17 +1,31 @@
-"""Binary wrapper dispatcher module for curlguard."""
+"""Prepare, fetch, validate, scan, and atomically commit supported GET downloads."""
+
 import hashlib
 import json
+import os
+import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
-from curlguard.logger import AuditEvent
+from curlguard.arguments import parse
+from curlguard.logger import AuditEvent, redact_url
+from curlguard.process import Interrupted, run
+
+
+def fingerprint(path):
+    try:
+        s = Path(path).lstat()
+        return s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns, s.st_mode
+    except FileNotFoundError:
+        return None
 
 
 class CurlWrapper:
@@ -19,581 +33,487 @@ class CurlWrapper:
     EXIT_QUARANTINED = 11
     EXIT_SSL_BLOCKED = 12
     EXIT_SCAN_FAILURE_BLOCKED = 13
+    EXIT_UNSUPPORTED = 14
+    EXIT_CONFIG = 15
+    EXIT_INTERNAL = 16
 
-    def __init__(self, config, scanner, logger, ssl_detector) -> None:
-        self._config = config
-        self._scanner = scanner
-        self._logger = logger
-        self._ssl_detector = ssl_detector
+    def __init__(self, config, scanner, logger, ssl_detector):
+        self._config, self._scanner = config, scanner
+        self._logger, self._ssl_detector = logger, ssl_detector
+        self._temporary = []
+        self._effective_url = ""
+        self._stage = "prepare"
+        self._request = None
 
-    def dispatch(self, args: list[str]) -> int:
-        started = time.perf_counter()
-        urls = self._extract_urls(args)
-        url = urls[0] if len(urls) == 1 else ""
-        destination = self._extract_output(args, url)
-
-        if not self._should_intercept(args, urls):
-            exit_code = self._call_real_curl(args)
-            self._log_event(
-                url=url,
-                destination=destination,
-                scan_result="skipped",
-                rules_triggered=[],
-                user_decision=None,
-                decision_reason="unsupported request shape",
-                ssl_bypass_detected=False,
-                content_sha256=None,
-                content_size_bytes=None,
-                quarantine_path=None,
-                duration_ms=self._elapsed_ms(started),
-                exit_code=exit_code,
-            )
-            return exit_code
-
-        ssl_result = self._ssl_detector.detect(args, url)
-        if ssl_result.is_bypass:
-            print(f"WARNING: {ssl_result.message}", file=sys.stderr)
-            if ssl_result.severity == "block" and not self._config.ssl_warn_only:
-                self._log_event(
-                    url=url,
-                    destination=destination,
-                    scan_result="skipped",
-                    rules_triggered=[],
-                    user_decision="block",
-                    decision_reason="ssl policy",
-                    ssl_bypass_detected=True,
-                    content_sha256=None,
-                    content_size_bytes=None,
-                    quarantine_path=None,
-                    duration_ms=self._elapsed_ms(started),
-                    exit_code=self.EXIT_SSL_BLOCKED,
-                )
-                return self.EXIT_SSL_BLOCKED
-
-        temp_path = None
+    def dispatch(self, args):
+        started = time.monotonic()
+        self._temporary = []
+        self._stage = "prepare"
+        self._effective_url = ""
+        self._request = None
+        self._facts = {}
+        self._status = "skipped"
+        self._decision = None
+        self._rules = []
+        self._quarantined = None
+        self._bypass = False
+        self._error = None
+        self._reason = None
+        self._writeout = b""
+        self._snapshot = None
+        code = self.EXIT_INTERNAL
         try:
-            temp_path = self._download_to_temp(args)
-            file_facts = self._inspect_file(temp_path)
-            scan_result = self._scanner.scan_file(temp_path)
+            self._validate_binary()
+            if args and args[0] in {
+                "--help",
+                "-h",
+                "--version",
+                "-V",
+                "--manual",
+                "-M",
+            }:
+                self._reason = "native curl information"
+                code = self._call_real_curl(args)
+                return code
+            r = self._request = parse(args)
+            if not r.reason and not self._metadata_supported():
+                r.reason = "curl lacks JSON transfer metadata (requires curl >= 7.70)"
+            if r.reason:
+                self._reason = r.reason
+                if self._config.unsupported_policy == "block":
+                    self._decision = "block"
+                    print(
+                        f"curlguard: unsupported request blocked: {r.reason}",
+                        file=sys.stderr,
+                    )
+                    code = self.EXIT_UNSUPPORTED
+                else:
+                    code = self._call_real_curl(args)
+                return code
+            self._reason = "supported single-URL GET"
+            url = r.urls[0]
+            ssl = self._ssl_detector.detect(r.options, url)
+            self._bypass = ssl.is_bypass
+            if ssl.is_bypass:
+                print(f"WARNING: {ssl.message}", file=sys.stderr)
+                if ssl.severity == "block" and not self._config.ssl_warn_only:
+                    self._decision = "block"
+                    self._reason = "ssl policy"
+                    code = self.EXIT_SSL_BLOCKED
+                    return code
+            if self._config.update_url:
+                from curlguard.auto_updater import AutoUpdater
 
-            if scan_result.status in {"unavailable", "error"}:
-                return self._handle_scan_failure(
-                    started=started,
-                    temp_path=temp_path,
-                    url=url,
-                    destination=destination,
-                    scan_result=scan_result,
-                    ssl_bypass_detected=ssl_result.is_bypass,
-                    file_facts=file_facts,
+                self._stage = "rules"
+                AutoUpdater(self._config, self._scanner).check_and_update()
+            payload = self._download_to_temp(args)
+            self._stage = "validate"
+            if self._metadata["http_code"] == 304:
+                self._reason = "not modified; existing payload preserved"
+                self._check_destination(r.destination, self._snapshot)
+                self._commit_etag()
+                self._emit_writeout()
+                code = 0
+                return code
+            self._facts = self._inspect_file(payload)
+            self._stage = "scan"
+            result = self._scanner.scan_file(payload)
+            self._status, self._rules = result.status, result.rules_triggered
+            if result.status in {"unavailable", "error"}:
+                self._error = "scan_failure"
+                self._reason = "scan failure policy"
+                print(
+                    f"WARNING: curlguard scan {result.status}: {result.error}",
+                    file=sys.stderr,
                 )
-
-            if not scan_result.clean:
-                trust_reason = self._get_trust_reason(url, file_facts["sha256"])
-                if trust_reason:
-                    delivery_target, metadata = self._deliver_file(
-                        temp_path,
-                        destination,
-                        file_facts=file_facts,
+                if self._config.scan_failure_mode == "block":
+                    self._decision = "block"
+                    code = self.EXIT_SCAN_FAILURE_BLOCKED
+                    return code
+                self._decision = "allow"
+            elif not result.clean:
+                trust = self._get_trust_reason(url, self._facts["sha256"])
+                if trust:
+                    self._decision, self._reason = "allow", trust
+                else:
+                    self._decision, self._reason = self._resolve_flagged_action(
+                        scan_result=result, url=redact_url(url), ssl_warn=ssl.is_bypass
                     )
-                    self._print_delivery_summary(
-                        delivery_target=delivery_target,
-                        metadata=metadata,
-                        scan_result="flagged",
-                        decision_reason=trust_reason,
-                        user_decision="allow",
-                    )
-                    self._log_event(
+                if self._decision == "block":
+                    code = self.EXIT_BLOCKED
+                    return code
+                if self._decision == "quarantine":
+                    self._stage = "quarantine"
+                    q = self._quarantine_file(
+                        payload,
                         url=url,
-                        destination=destination,
-                        scan_result="flagged",
-                        rules_triggered=scan_result.rules_triggered,
-                        user_decision="allow",
-                        decision_reason=trust_reason,
-                        ssl_bypass_detected=ssl_result.is_bypass,
-                        content_sha256=file_facts["sha256"],
-                        content_size_bytes=file_facts["size"],
-                        quarantine_path=None,
-                        duration_ms=self._elapsed_ms(started),
-                        exit_code=0,
+                        rules_triggered=self._rules,
+                        file_facts=self._facts,
                     )
-                    return 0
-
-                decision, decision_reason = self._resolve_flagged_action(
-                    scan_result=scan_result,
-                    url=url,
-                    ssl_warn=ssl_result.is_bypass,
-                )
-                if decision == "block":
-                    self._safe_unlink(temp_path)
-                    self._log_event(
-                        url=url,
-                        destination=destination,
-                        scan_result="flagged",
-                        rules_triggered=scan_result.rules_triggered,
-                        user_decision="block",
-                        decision_reason=decision_reason,
-                        ssl_bypass_detected=ssl_result.is_bypass,
-                        content_sha256=file_facts["sha256"],
-                        content_size_bytes=file_facts["size"],
-                        quarantine_path=None,
-                        duration_ms=self._elapsed_ms(started),
-                        exit_code=self.EXIT_BLOCKED,
+                    self._quarantined = str(q)
+                    print(
+                        f"curlguard: suspicious content quarantined at {q}",
+                        file=sys.stderr,
                     )
-                    return self.EXIT_BLOCKED
-                if decision == "quarantine":
-                    quarantine_path = self._quarantine_file(
-                        temp_path,
-                        url=url,
-                        rules_triggered=scan_result.rules_triggered,
-                        file_facts=file_facts,
-                    )
-                    self._print_quarantine_summary(quarantine_path, file_facts, decision_reason)
-                    self._log_event(
-                        url=url,
-                        destination=destination,
-                        scan_result="flagged",
-                        rules_triggered=scan_result.rules_triggered,
-                        user_decision="quarantine",
-                        decision_reason=decision_reason,
-                        ssl_bypass_detected=ssl_result.is_bypass,
-                        content_sha256=file_facts["sha256"],
-                        content_size_bytes=file_facts["size"],
-                        quarantine_path=str(quarantine_path),
-                        duration_ms=self._elapsed_ms(started),
-                        exit_code=self.EXIT_QUARANTINED,
-                    )
-                    return self.EXIT_QUARANTINED
-
-                delivery_target, metadata = self._deliver_file(
-                    temp_path,
-                    destination,
-                    file_facts=file_facts,
-                )
-                self._print_delivery_summary(
-                    delivery_target=delivery_target,
-                    metadata=metadata,
-                    scan_result="flagged",
-                    decision_reason=decision_reason,
-                    user_decision="allow",
-                )
-                self._log_event(
-                    url=url,
-                    destination=destination,
-                    scan_result="flagged",
-                    rules_triggered=scan_result.rules_triggered,
-                    user_decision="allow",
-                    decision_reason=decision_reason,
-                    ssl_bypass_detected=ssl_result.is_bypass,
-                    content_sha256=file_facts["sha256"],
-                    content_size_bytes=file_facts["size"],
-                    quarantine_path=None,
-                    duration_ms=self._elapsed_ms(started),
-                    exit_code=0,
-                )
-                return 0
-
-            delivery_target, metadata = self._deliver_file(
-                temp_path,
-                destination,
-                file_facts=file_facts,
-            )
+                    code = self.EXIT_QUARANTINED
+                    return code
+            else:
+                self._reason = "scan clean"
+            self._stage = "commit"
+            # Preflight both outputs before changing either. ETag failure must never
+            # make an unchanged payload appear successfully refreshed.
+            self._check_destination(r.destination, self._snapshot)
+            self._check_destination(r.values.get("etag-save"), self._etag_snapshot)
+            target, metadata = self._commit_outputs(payload)
+            self._emit_writeout()
             self._print_delivery_summary(
-                delivery_target=delivery_target,
+                delivery_target=target,
                 metadata=metadata,
-                scan_result="clean",
-                decision_reason=None,
-                user_decision=None,
+                scan_result=self._status,
+                decision_reason=self._reason,
+                user_decision=self._decision,
             )
-            self._log_event(
-                url=url,
-                destination=destination,
-                scan_result="clean",
-                rules_triggered=[],
-                user_decision=None,
-                decision_reason="scan clean",
-                ssl_bypass_detected=ssl_result.is_bypass,
-                content_sha256=file_facts["sha256"],
-                content_size_bytes=file_facts["size"],
-                quarantine_path=None,
-                duration_ms=self._elapsed_ms(started),
-                exit_code=0,
-            )
-            return 0
+            code = 0
+            return code
         except subprocess.CalledProcessError as exc:
+            self._error, self._reason, self._status = (
+                "curl_failure",
+                "real curl failed",
+                "error",
+            )
             if exc.stderr:
                 sys.stderr.buffer.write(exc.stderr)
-            self._log_event(
-                url=url,
-                destination=destination,
-                scan_result="error",
-                rules_triggered=[],
-                user_decision=None,
-                decision_reason="real curl failed",
-                ssl_bypass_detected=ssl_result.is_bypass,
-                content_sha256=None,
-                content_size_bytes=None,
-                quarantine_path=None,
-                duration_ms=self._elapsed_ms(started),
-                exit_code=exc.returncode,
+            code = exc.returncode
+            try:
+                self._emit_writeout()
+            except BrokenPipeError:
+                # Preserve the original transfer failure; suppress shutdown flushing.
+                self._silence_broken_pipe()
+            return code
+        except BrokenPipeError:
+            self._error = "broken_pipe"
+            # Avoid a second broken pipe when Python flushes stdout at shutdown.
+            self._silence_broken_pipe()
+            code = 23
+            return code
+        except Interrupted as exc:
+            self._error = "interrupted"
+            code = 128 + exc.signum
+            return code
+        except KeyboardInterrupt:
+            self._error = "interrupted"
+            code = 130
+            return code
+        except ValueError as exc:
+            self._error = "configuration"
+            print(f"curlguard: {exc}", file=sys.stderr)
+            code = self.EXIT_CONFIG
+            return code
+        except Exception as exc:
+            self._error = type(exc).__name__
+            self._status = "error"
+            print(
+                f"curlguard: {self._stage} failed ({type(exc).__name__})",
+                file=sys.stderr,
             )
-            return exc.returncode
+            code = self.EXIT_INTERNAL
+            return code
         finally:
-            if temp_path and temp_path.exists():
-                self._safe_unlink(temp_path)
+            r = self._request
+            for path in self._temporary:
+                self._safe_unlink(path)
+            self._logger.log(
+                AuditEvent(
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    url=r.urls[0] if r and len(r.urls) == 1 else "",
+                    destination=r.destination if r else None,
+                    scan_result=self._status,
+                    rules_triggered=self._rules,
+                    user_decision=self._decision,
+                    decision_reason=self._reason,
+                    ssl_bypass_detected=self._bypass,
+                    content_sha256=self._facts.get("sha256"),
+                    content_size_bytes=self._facts.get("size"),
+                    quarantine_path=self._quarantined,
+                    duration_ms=(time.monotonic() - started) * 1000,
+                    exit_code=code,
+                    stage=self._stage,
+                    error_category=self._error,
+                    interception_reason=r.reason if r else None,
+                    effective_url=self._effective_url or None,
+                    ruleset_id=getattr(self._scanner, "ruleset_id", None),
+                )
+            )
 
-    def _extract_url(self, args: list[str]) -> str | None:
-        urls = self._extract_urls(args)
-        if not urls:
-            return None
-        return urls[0]
+    def _validate_binary(self):
+        path = self._config.real_curl_path
+        with path.open("rb") as handle:
+            prefix = handle.read(4096)
+        if b"curlguard" in prefix or path.resolve() == Path(sys.argv[0]).resolve():
+            raise ValueError("real curl resolves to a curlguard wrapper")
 
-    def _extract_urls(self, args: list[str]) -> list[str]:
-        return [
-            arg for arg in args
-            if arg.startswith(("http://", "https://", "ftp://", "sftp://"))
+    def _silence_broken_pipe(self):
+        try:
+            fd = os.open(os.devnull, os.O_WRONLY)
+            try:
+                os.dup2(fd, sys.stdout.fileno())
+            finally:
+                os.close(fd)
+        except (OSError, AttributeError):
+            pass
+
+    def _metadata_supported(self):
+        p = subprocess.run(
+            [str(self._config.real_curl_path), "--version"],
+            capture_output=True,
+            timeout=5,
+        )
+        match = re.match(rb"curl (\d+)\.(\d+)\.(\d+)", p.stdout)
+        return (
+            p.returncode == 0
+            and match is not None
+            and tuple(map(int, match.groups())) >= (7, 70, 0)
+        )
+
+    def _temp(self, destination=None):
+        fd, name = tempfile.mkstemp(
+            prefix=".curlguard-",
+            suffix=".download",
+            dir=str(Path(destination).absolute().parent) if destination else None,
+        )
+        os.close(fd)
+        path = Path(name)
+        self._temporary.append(path)
+        return path
+
+    def _download_to_temp(self, args):
+        r = self._request or parse(args)
+        self._snapshot = fingerprint(r.destination) if r.destination else None
+        payload = self._temp(r.destination)
+        if "continue-at" in r.values and r.destination and Path(r.destination).exists():
+            shutil.copyfile(r.destination, payload)
+        self._etag_snapshot = (
+            fingerprint(r.values["etag-save"]) if "etag-save" in r.values else None
+        )
+        self._etag = (
+            self._temp(r.values["etag-save"]) if "etag-save" in r.values else None
+        )
+        headers = self._temp()
+        marker = "\nCURLGUARD-" + uuid.uuid4().hex + "\n"
+        fmt = "%{json}" + marker + r.values.get("write-out", "")
+        cmd = [
+            str(self._config.real_curl_path),
+            "--disable",
+            *r.options,
+            "--output",
+            str(payload),
+            "--dump-header",
+            str(headers),
+            "--write-out",
+            fmt,
         ]
-
-    def _extract_output(self, args: list[str], url: str | None = None) -> str | None:
-        for i, arg in enumerate(args):
-            if arg in ("-o", "--output"):
-                if i + 1 < len(args):
-                    return None if args[i + 1] == "-" else args[i + 1]
-            elif arg.startswith("-o") and len(arg) > 2:
-                value = arg[2:]
-                return None if value == "-" else value
-            elif arg.startswith("--output="):
-                value = arg[9:]
-                return None if value == "-" else value
-            elif arg in ("-O", "--remote-name") and url:
-                return self._remote_name_from_url(url)
-        return None
-
-    def _should_intercept(self, args: list[str], urls: list[str]) -> bool:
-        if len(urls) != 1:
-            return False
-
-        unsupported_flags = {
-            "-I",
-            "--head",
-            "-T",
-            "--upload-file",
-            "-F",
-            "--form",
-            "-d",
-            "--data",
-            "--data-raw",
-            "--data-binary",
-            "--data-urlencode",
-            "--next",
-            "-J",
-            "--remote-header-name",
-        }
-        return not any(arg in unsupported_flags for arg in args)
-
-    def _download_to_temp(self, args: list[str]) -> Path:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".download") as handle:
-            temp_path = Path(handle.name)
-
-        cmd = [str(self._config.real_curl_path), *self._sanitize_args(args), "--output", str(temp_path)]
-        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        if result.returncode != 0:
-            self._safe_unlink(temp_path)
-            raise subprocess.CalledProcessError(
-                result.returncode,
-                cmd,
-                stderr=result.stderr,
+        if self._etag:
+            cmd += ["--etag-save", str(self._etag)]
+        cmd += ["--url", r.urls[0]]
+        self._stage = "fetch"
+        p = run(cmd, stdout=subprocess.PIPE)
+        meta, separator, self._writeout = (p.stdout or b"").partition(marker.encode())
+        if p.returncode:
+            raise subprocess.CalledProcessError(p.returncode, cmd)
+        if not separator:
+            raise OSError("curl did not return transfer metadata")
+        try:
+            self._metadata = json.loads(meta)
+            if not isinstance(self._metadata["http_code"], int) or not isinstance(
+                self._metadata["url_effective"], str
+            ):
+                raise ValueError("wrong metadata types")
+        except (ValueError, KeyError, TypeError) as exc:
+            raise OSError("invalid curl transfer metadata") from exc
+        self._effective_url = self._metadata["url_effective"]
+        if self._metadata["http_code"] == 206 and "continue-at" not in r.values:
+            raise OSError("unexpected partial response")
+        if self._metadata["http_code"] == 206:
+            blocks = headers.read_bytes().replace(b"\r\n", b"\n").split(b"\n\n")
+            final = [block for block in blocks if block.startswith(b"HTTP/")][-1]
+            fields = dict(
+                line.split(b":", 1) for line in final.split(b"\n")[1:] if b":" in line
             )
-        return temp_path
-
-    def _sanitize_args(self, args: list[str]) -> list[str]:
-        sanitized: list[str] = []
-        skip_next = False
-        for arg in args:
-            if skip_next:
-                skip_next = False
-                continue
-            if arg in {"-o", "--output"}:
-                skip_next = True
-                continue
-            if arg.startswith("--output="):
-                continue
-            if arg.startswith("-o") and arg != "-o":
-                continue
-            if arg in {"-O", "--remote-name"}:
-                continue
-            sanitized.append(arg)
-        return sanitized
-
-    def _call_real_curl(self, args: list[str]) -> int:
-        cmd = [str(self._config.real_curl_path)] + args
-        result = subprocess.run(cmd)
-        return result.returncode
-
-    def _handle_scan_failure(
-        self,
-        *,
-        started: float,
-        temp_path: Path,
-        url: str,
-        destination: str | None,
-        scan_result,
-        ssl_bypass_detected: bool,
-        file_facts: dict[str, str | int],
-    ) -> int:
-        warning = (
-            f"WARNING: curlguard scan {scan_result.status}: {scan_result.error or 'unknown error'}"
-        )
-        if self._config.scan_failure_mode == "block":
-            print(f"{warning}. Blocking download.", file=sys.stderr)
-            self._safe_unlink(temp_path)
-            self._log_event(
-                url=url,
-                destination=destination,
-                scan_result=scan_result.status,
-                rules_triggered=[],
-                user_decision="block",
-                decision_reason="scan failure policy",
-                ssl_bypass_detected=ssl_bypass_detected,
-                content_sha256=file_facts["sha256"],
-                content_size_bytes=file_facts["size"],
-                quarantine_path=None,
-                duration_ms=self._elapsed_ms(started),
-                exit_code=self.EXIT_SCAN_FAILURE_BLOCKED,
+            content_range = next(
+                (v.strip() for k, v in fields.items() if k.lower() == b"content-range"),
+                b"",
             )
-            return self.EXIT_SCAN_FAILURE_BLOCKED
+            match = re.fullmatch(rb"bytes (\d+)-(\d+)/(\d+)", content_range)
+            offset = r.values["continue-at"]
+            expected = (
+                self._snapshot[2]
+                if offset == "-" and self._snapshot
+                else int(offset if offset != "-" else "0")
+            )
+            if not match:
+                raise OSError("invalid resume Content-Range")
+            first, last, size = map(int, match.groups())
+            if first != expected or last + 1 != size or payload.stat().st_size != size:
+                raise OSError("inconsistent resume Content-Range")
+        return payload
 
-        print(f"{warning}. Delivering content due to configured warn mode.", file=sys.stderr)
-        delivery_target, metadata = self._deliver_file(
-            temp_path,
-            destination,
-            file_facts=file_facts,
-        )
-        self._print_delivery_summary(
-            delivery_target=delivery_target,
-            metadata=metadata,
-            scan_result=scan_result.status,
-            decision_reason="scan failure policy",
-            user_decision="allow",
-        )
-        self._log_event(
-            url=url,
-            destination=destination,
-            scan_result=scan_result.status,
-            rules_triggered=[],
-            user_decision="allow",
-            decision_reason="scan failure policy",
-            ssl_bypass_detected=ssl_bypass_detected,
-            content_sha256=file_facts["sha256"],
-            content_size_bytes=file_facts["size"],
-            quarantine_path=None,
-            duration_ms=self._elapsed_ms(started),
-            exit_code=0,
-        )
-        return 0
+    def _check_destination(self, path, snapshot):
+        if path and fingerprint(path) != snapshot:
+            raise OSError("destination changed during download")
 
-    def _deliver_file(
-        self,
-        temp_path: Path,
-        output_file: str | None,
-        *,
-        file_facts: dict[str, str | int] | None = None,
-    ) -> tuple[str, str]:
-        facts = file_facts or self._inspect_file(temp_path)
-        metadata = self._format_file_metadata(facts)
+    def _commit_etag(self):
+        if self._etag:
+            dest = self._request.values["etag-save"]
+            self._check_destination(dest, self._etag_snapshot)
+            os.replace(self._etag, dest)
+
+    def _commit_outputs(self, payload):
+        """Rollback ETag changes if payload delivery fails; never replay stdout."""
+        dest = self._request.values.get("etag-save")
+        backup = None
+        changed = None
+        if dest and Path(dest).exists():
+            backup = self._temp(dest)
+            shutil.copy2(dest, backup)
+        try:
+            self._commit_etag()
+            changed = fingerprint(dest) if dest else None
+            return self._deliver_file(
+                payload, self._request.destination, file_facts=self._facts
+            )
+        except BaseException:
+            if dest and fingerprint(dest) == changed and changed != self._etag_snapshot:
+                if backup:
+                    os.replace(backup, dest)
+                else:
+                    Path(dest).unlink(missing_ok=True)
+            raise
+
+    def _deliver_file(self, temp_path, output_file, *, file_facts=None):
+        metadata = self._format_file_metadata(
+            file_facts or self._inspect_file(temp_path)
+        )
         if output_file:
-            shutil.move(str(temp_path), output_file)
+            self._check_destination(output_file, self._snapshot)
+            if self._snapshot:
+                os.chmod(temp_path, stat.S_IMODE(self._snapshot[-1]) & 0o777)
+            os.replace(temp_path, output_file)
             return f"saved to {output_file}", metadata
-
         with temp_path.open("rb") as handle:
             shutil.copyfileobj(handle, sys.stdout.buffer)
-        self._safe_unlink(temp_path)
+        sys.stdout.buffer.flush()
         return "written to stdout", metadata
 
-    def _print_delivery_summary(
-        self,
-        *,
-        delivery_target: str,
-        metadata: str,
-        scan_result: str,
-        decision_reason: str | None,
-        user_decision: str | None,
-    ) -> None:
-        if scan_result == "clean":
-            print(
-                f"curlguard: download verified, {delivery_target} ({metadata}).",
-                file=sys.stderr,
-            )
-            return
-        if scan_result in {"unavailable", "error"} and user_decision == "allow":
-            reason_suffix = f" via {decision_reason}" if decision_reason else ""
-            print(
-                f"curlguard: content was delivered{reason_suffix} and {delivery_target} ({metadata}).",
-                file=sys.stderr,
-            )
-            return
-        if user_decision == "allow":
-            reason_suffix = f" via {decision_reason}" if decision_reason else ""
-            print(
-                f"curlguard: flagged content was allowed{reason_suffix} and {delivery_target} ({metadata}).",
-                file=sys.stderr,
-            )
+    def _emit_writeout(self):
+        if self._writeout:
+            sys.stdout.buffer.write(self._writeout)
+            sys.stdout.buffer.flush()
+            self._writeout = b""
 
-    def _print_quarantine_summary(
-        self,
-        quarantine_path: Path,
-        file_facts: dict[str, str | int],
-        decision_reason: str | None,
-    ) -> None:
-        metadata = self._format_file_metadata(file_facts)
-        reason_suffix = f" via {decision_reason}" if decision_reason else ""
+    def _print_delivery_summary(
+        self, *, delivery_target, metadata, scan_result, decision_reason, user_decision
+    ):
+        if self._request and "--silent" in self._request.options:
+            return
+        if scan_result == "clean":
+            description = "download verified"
+        elif scan_result == "flagged":
+            description = f"flagged content was allowed via {decision_reason}"
+        else:
+            description = f"content was delivered via {decision_reason}"
         print(
-            f"curlguard: suspicious content quarantined{reason_suffix} at {quarantine_path} ({metadata}).",
+            f"curlguard: {description}, {delivery_target} ({metadata}).",
             file=sys.stderr,
         )
 
-    def _format_file_metadata(self, file_facts: dict[str, str | int]) -> str:
-        return f"{file_facts['size']} bytes, sha256={file_facts['sha256']}"
+    def _inspect_file(self, path):
+        digest = hashlib.sha256()
+        size = 0
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+                size += len(chunk)
+        return {"sha256": digest.hexdigest(), "size": size}
 
-    def _inspect_file(self, path: Path) -> dict[str, str | int]:
-        payload = path.read_bytes()
-        return {
-            "sha256": hashlib.sha256(payload).hexdigest(),
-            "size": len(payload),
-        }
+    def _format_file_metadata(self, facts):
+        return f"{facts['size']} bytes, sha256={facts['sha256']}"
 
-    def _quarantine_file(
-        self,
-        temp_path: Path,
-        *,
-        url: str,
-        rules_triggered: list[str],
-        file_facts: dict[str, str | int],
-    ) -> Path:
+    def _quarantine_file(self, temp_path, *, url, rules_triggered, file_facts):
         qdir = self._config.quarantine_dir
-        qdir.mkdir(parents=True, exist_ok=True)
-        qpath = qdir / f"{int(time.time())}_{temp_path.name}"
-        shutil.move(str(temp_path), str(qpath))
-        metadata_path = qpath.with_suffix(qpath.suffix + ".json")
-        metadata_path.write_text(
-            json.dumps(
-                {
-                    "url": url,
-                    "rules_triggered": rules_triggered,
-                    "sha256": file_facts["sha256"],
-                    "size_bytes": file_facts["size"],
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
+        qdir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd, name = tempfile.mkstemp(
+            prefix=f"{int(time.time())}_", suffix=".download", dir=qdir
         )
-        return qpath
+        qpath = Path(name)
+        sidecar = qpath.with_suffix(qpath.suffix + ".json")
+        try:
+            with os.fdopen(fd, "wb") as out, temp_path.open("rb") as src:
+                shutil.copyfileobj(src, out)
+            data = {
+                "url": redact_url(url),
+                "rules_triggered": rules_triggered,
+                "sha256": file_facts["sha256"],
+                "size_bytes": file_facts["size"],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            fd = os.open(sidecar, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                json.dump(data, handle)
+            return qpath
+        except BaseException:
+            self._safe_unlink(qpath)
+            self._safe_unlink(sidecar)
+            raise
 
-    def _log_event(
-        self,
-        *,
-        url: str,
-        destination: str | None,
-        scan_result: str,
-        rules_triggered: list[str],
-        user_decision: str | None,
-        decision_reason: str | None,
-        ssl_bypass_detected: bool,
-        content_sha256: str | None,
-        content_size_bytes: int | None,
-        quarantine_path: str | None,
-        duration_ms: float,
-        exit_code: int,
-    ) -> None:
-        self._logger.log(
-            AuditEvent(
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                url=url,
-                destination=destination,
-                scan_result=scan_result,
-                rules_triggered=rules_triggered,
-                user_decision=user_decision,
-                decision_reason=decision_reason,
-                ssl_bypass_detected=ssl_bypass_detected,
-                content_sha256=content_sha256,
-                content_size_bytes=content_size_bytes,
-                quarantine_path=quarantine_path,
-                duration_ms=duration_ms,
-                exit_code=exit_code,
-            )
+    def _resolve_flagged_action(self, *, scan_result, url, ssl_warn):
+        policy = self._config.match_policy
+        if policy == "prompt":
+            from curlguard.tui import prompt_user
+
+            return prompt_user(scan_result, url, ssl_warn), "interactive review"
+        print(
+            f"curlguard: suspicious content: {', '.join(scan_result.rules_triggered)}; policy={policy}",
+            file=sys.stderr,
+        )
+        return policy, "configured policy"
+
+    def _get_trust_reason(self, url, checksum):
+        if checksum in self._config.trusted_sha256:
+            return "trusted checksum"
+        hosts = [urlsplit(u).hostname for u in (url, self._effective_url or url)]
+        if all(h and self._is_trusted_host(h.lower()) for h in hosts):
+            return "trusted host"
+        return None
+
+    def _is_trusted_host(self, host):
+        return any(
+            host == h or host.endswith("." + h) for h in self._config.trusted_hosts
         )
 
-    def _elapsed_ms(self, started: float) -> float:
-        return (time.perf_counter() - started) * 1000
+    def _call_real_curl(self, args):
+        self._stage = "passthrough"
+        return run([str(self._config.real_curl_path), *args]).returncode
 
-    def _safe_unlink(self, path: Path) -> None:
+    def _safe_unlink(self, path):
         try:
             path.unlink(missing_ok=True)
         except OSError:
             pass
 
-    def stream_scan(self, args: list[str]) -> Iterator[bytes]:
-        cmd = [str(self._config.real_curl_path)] + args
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
-        buffer = bytearray()
-        for chunk in iter(lambda: proc.stdout.read(8192), b""):
-            buffer.extend(chunk)
-            yield chunk
+    # Compatibility helpers for callers inspecting request shapes.
+    def _extract_urls(self, args):
+        return parse(args, check_config=False).urls
 
-        # Scan accumulated buffer
-        if buffer:
-            result = self._scanner.scan(bytes(buffer))
-            if not result.clean:
-                proc.terminate()
-                raise ValueError(f"Malware detected: {result.rules_triggered}")
+    def _extract_url(self, args):
+        urls = self._extract_urls(args)
+        return urls[0] if urls else None
 
-    def _resolve_flagged_action(self, *, scan_result, url: str, ssl_warn: bool) -> tuple[str, str]:
-        matched_rules = ", ".join(scan_result.rules_triggered)
-        if self._config.match_policy == "prompt":
-            print(
-                "curlguard: suspicious content detected; opening interactive review prompt.",
-                file=sys.stderr,
-            )
-            print(f"curlguard: matched rules: {matched_rules}", file=sys.stderr)
-            from curlguard.tui import prompt_user
+    def _extract_output(self, args, url=None):
+        return parse(args, check_config=False).destination
 
-            return prompt_user(scan_result, url, ssl_warn), "interactive review"
+    def _should_intercept(self, args, urls):
+        return parse(args).reason is None
 
-        if self._config.match_policy == "quarantine":
-            print(
-                f"curlguard: suspicious content detected; quarantining due to configured policy. Matched rules: {matched_rules}",
-                file=sys.stderr,
-            )
-            return "quarantine", "configured policy"
-
-        if self._config.match_policy == "block":
-            print(
-                f"curlguard: suspicious content detected; blocking due to configured policy. Matched rules: {matched_rules}",
-                file=sys.stderr,
-            )
-            return "block", "configured policy"
-
-        print(
-            f"curlguard: suspicious content detected; delivering due to configured policy. Matched rules: {matched_rules}",
-            file=sys.stderr,
-        )
-        return "allow", "configured policy"
-
-    def _get_trust_reason(self, url: str, checksum: str) -> str | None:
-        host = urlparse(url).hostname.lower() if urlparse(url).hostname else ""
-        if checksum in self._config.trusted_sha256:
-            return "trusted checksum"
-        if host and self._is_trusted_host(host):
-            return "trusted host"
-        return None
-
-    def _is_trusted_host(self, host: str) -> bool:
-        return any(
-            host == trusted_host or host.endswith(f".{trusted_host}")
-            for trusted_host in self._config.trusted_hosts
-        )
-
-    def _remote_name_from_url(self, url: str) -> str | None:
-        parsed = urlparse(url)
-        filename = Path(parsed.path).name
-        return filename or None
+    def _sanitize_args(self, args):
+        r = parse(args, check_config=False)
+        return [*r.options, "--url", *r.urls]

@@ -1,6 +1,7 @@
 """Rules watcher module for curlguard."""
+
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 
 class RulesWatcher:
@@ -19,7 +20,10 @@ class RulesWatcher:
                 continue
             for yara_file in rules_dir.glob("*.yar"):
                 mtime = yara_file.stat().st_mtime
-                if yara_file not in self._last_mtimes or self._last_mtimes[yara_file] != mtime:
+                if (
+                    yara_file not in self._last_mtimes
+                    or self._last_mtimes[yara_file] != mtime
+                ):
                     changed.append(yara_file)
                     self._last_mtimes[yara_file] = mtime
         return changed
@@ -27,6 +31,7 @@ class RulesWatcher:
     def auto_reload(self, callback: Callable) -> None:
         # Polling implementation - check every 5 seconds
         import time
+
         while True:
             changed = self.watch()
             if changed:

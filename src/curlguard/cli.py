@@ -1,11 +1,12 @@
 """CLI entry point for curlguard."""
+
 import argparse
 import sys
 
 from curlguard import __version__
-from curlguard.auto_updater import AutoUpdater
 from curlguard.config import load_config
 from curlguard.logger import AuditLogger
+from curlguard.process import Interrupted, cancellation
 from curlguard.quarantine import (
     format_size,
     format_timestamp,
@@ -18,8 +19,30 @@ from curlguard.wrapper import CurlWrapper
 
 
 def main() -> int:
-    if len(sys.argv) > 1 and sys.argv[1] == "quarantine":
-        return _handle_quarantine_cli(sys.argv[2:])
+    try:
+        with cancellation():
+            return _main()
+    except Interrupted as exc:
+        return 128 + exc.signum
+    except ValueError as exc:
+        print(f"curlguard: {exc}", file=sys.stderr)
+        return 15
+    except KeyboardInterrupt:
+        return 130
+    except Exception as exc:
+        print(
+            f"curlguard: initialization failed ({type(exc).__name__})", file=sys.stderr
+        )
+        return 16
+
+
+def _main() -> int:
+    argv = sys.argv[1:]
+    as_curl = bool(argv and argv[0] == "--as-curl")
+    if as_curl:
+        argv = argv[1:]
+    if not as_curl and argv and argv[0] == "quarantine":
+        return _handle_quarantine_cli(argv[1:])
 
     parser = argparse.ArgumentParser(
         prog="curlguard",
@@ -67,6 +90,9 @@ Exit codes:
   11  quarantined due to suspicious content
   12  blocked by SSL/TLS policy
   13  blocked because scanning failed and fail-closed mode is enabled
+  14  unsupported request blocked
+  15  invalid configuration
+  16  internal or delivery failure
 
 Testing:
   python3 examples/true_positive/start_server.py
@@ -76,23 +102,33 @@ Logs:
   Per-user:    ~/.curlguard/audit.log
   System-wide: /var/log/curlguard/audit.log""",
     )
-    parser.add_argument("--version", action="version", version=f"curlguard {__version__}")
-    parser.add_argument("curl_args", nargs=argparse.REMAINDER, help="Arguments to pass through to curlguard and then curl")
-    args = parser.parse_args()
-
-    if not args.curl_args:
+    parser.add_argument(
+        "--version", action="version", version=f"curlguard {__version__}"
+    )
+    parser.add_argument(
+        "curl_args",
+        nargs=argparse.REMAINDER,
+        help="Arguments to pass through to curlguard and then curl",
+    )
+    if not as_curl and (not argv or argv == ["--help"] or argv == ["-h"]):
         parser.print_help()
+        return 0
+    if not as_curl and argv == ["--version"]:
+        print(f"curlguard {__version__}")
         return 0
 
     config = load_config()
-    scanner = YaraScanner(config.rules_dirs)
-    AutoUpdater(config, scanner).check_and_update()
+    scanner = YaraScanner(
+        config.rules_dirs,
+        timeout=config.scan_timeout_seconds,
+        max_bytes=config.max_scan_bytes,
+    )
     logger = AuditLogger(config.log_path)
     ssl_detector = SslBypassDetector()
     wrapper = CurlWrapper(config, scanner, logger, ssl_detector)
 
     try:
-        return wrapper.dispatch(args.curl_args)
+        return wrapper.dispatch(argv)
     finally:
         logger.close()
 
@@ -107,8 +143,12 @@ def _handle_quarantine_cli(argv: list[str]) -> int:
 
     subparsers.add_parser("list", help="List quarantined payloads")
 
-    inspect_parser = subparsers.add_parser("inspect", help="Show one quarantined payload")
-    inspect_parser.add_argument("identifier", help="Payload name, prefix, or metadata path")
+    inspect_parser = subparsers.add_parser(
+        "inspect", help="Show one quarantined payload"
+    )
+    inspect_parser.add_argument(
+        "identifier", help="Payload name, prefix, or metadata path"
+    )
 
     args = parser.parse_args(argv)
     config = load_config()

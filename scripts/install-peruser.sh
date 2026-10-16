@@ -74,13 +74,17 @@ step "3/5" "Installing the curlguard package"
 install_project || die "Could not install curlguard. Try: python3 -m pip install --user --break-system-packages -e '$PROJECT_DIR'"
 
 step "4/5" "Installing the curl wrapper"
-python3 -c "
+python3 - "$PROJECT_DIR" <<'PY'
 import sys
-sys.path.insert(0, '$PROJECT_DIR/src')
+sys.path.insert(0, sys.argv[1] + '/src')
 from curlguard.curl_manager import CurlManager
-CurlManager('per-user').install()
+try:
+    CurlManager('per-user').install()
+except Exception as exc:
+    print(f'curlguard: installation failed: {exc}', file=sys.stderr)
+    raise SystemExit(1)
 print('Installed wrapper at ~/.local/bin/curl')
-"
+PY
 
 step "5/5" "Updating shell configuration"
 SHELL_RC="$(pick_shell_rc || true)"

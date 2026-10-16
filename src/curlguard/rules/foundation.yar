@@ -8,10 +8,10 @@ rule base64_encoded_shell {
     description = "Detects base64-encoded shell command payloads"
     severity = "high"
   strings:
-    $b64_magic = /[A-Za-z0-9+\/]{50,}={0,2}/
-    $decode_cmd = /(base64\s+-d|openssl\s+base64|-d\s+<<<)/i
+    $pipe_exec = /(base64\s+(-d|--decode)|openssl\s+base64\s+-d)[ \t]*\|[ \t]*(ba)?sh\b/i
+    $sub_exec = /(eval|bash[ \t]+-c|sh[ \t]+-c)[ \t]+["']?\$\([^\n]{0,256}base64[ \t]+(-d|--decode)/i
   condition:
-    $b64_magic and $decode_cmd
+    any of them
 }
 
 rule suspicious_pipe_bash {

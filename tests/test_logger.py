@@ -1,9 +1,9 @@
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-import pytest
-from curlguard.logger import AuditLogger, AuditEvent
+from curlguard.logger import AuditEvent, AuditLogger
 
 
 def test_logger_import():

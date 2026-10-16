@@ -3,6 +3,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+MIGRATE_LEGACY=false
+if [ "${1:-}" = "--migrate-legacy" ] && [ "$#" -eq 1 ]; then
+    MIGRATE_LEGACY=true
+elif [ "$#" -ne 0 ]; then
+    printf 'Usage: %s [--migrate-legacy]\n' "$0" >&2
+    exit 2
+fi
 
 step() {
     printf '\n[%s] %s\n' "$1" "$2"
@@ -60,19 +67,24 @@ $SUDO python3 -m pip install --break-system-packages -e "$PROJECT_DIR" 2>/dev/nu
     die "Could not install curlguard. Try: sudo python3 -m pip install --break-system-packages -e '$PROJECT_DIR'"
 
 step "4/5" "Installing the curl wrapper"
-$SUDO python3 -c "
+$SUDO python3 - "$PROJECT_DIR" "$MIGRATE_LEGACY" <<'PY'
 import sys
-sys.path.insert(0, '$PROJECT_DIR/src')
+sys.path.insert(0, sys.argv[1] + '/src')
 from curlguard.curl_manager import CurlManager
-CurlManager('system-wide').install()
-print('Installed wrapper at /usr/bin/curl')
-"
+try:
+    CurlManager('system-wide').install(migrate_legacy=sys.argv[2] == 'true')
+except Exception as exc:
+    print(f'curlguard: installation failed: {exc}', file=sys.stderr)
+    raise SystemExit(1)
+print('Installed wrapper at /usr/local/bin/curl; /usr/bin/curl remains package-owned')
+PY
 
 step "5/5" "Writing environment configuration"
 PROFILE_FILE="/etc/profile.d/curlguard.sh"
 if [ ! -f "$PROFILE_FILE" ]; then
     $SUDO tee "$PROFILE_FILE" > /dev/null <<'PROFILE'
 export CURLGUARD_MODE=system-wide
+export PATH="/usr/local/bin:$PATH"
 PROFILE
     info "Created $PROFILE_FILE"
 else

@@ -30,13 +30,15 @@ rule rule_name {
 ## Tests
 
 ```bash
-pytest tests/ -v
+python -m pytest
 ```
 
 Add tests for any new module or significant logic change.
+See [development and verification](docs/development.md) for Linux/WSL setup,
+focused test selection, and failure diagnostics.
 
 ## Submitting Changes
 
 1. Add YARA rule to foundation.yar (for general rules) or user rules dir
-2. Ensure `pytest tests/ -v` passes
+2. Run the lint, format, and full-test commands in [development and verification](docs/development.md)
 3. Commit with descriptive message: `feat(core): ...`, `fix(scanner): ...`, `docs: ...`

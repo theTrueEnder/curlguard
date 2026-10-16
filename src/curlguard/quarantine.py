@@ -1,4 +1,5 @@
 """Quarantine inspection helpers for curlguard."""
+
 import json
 from dataclasses import dataclass
 from datetime import datetime
@@ -45,7 +46,9 @@ def list_entries(quarantine_dir: Path) -> list[QuarantineEntry]:
 def resolve_entry(quarantine_dir: Path, identifier: str) -> QuarantineEntry | None:
     candidate = Path(identifier).expanduser()
     if candidate.exists():
-        metadata_path = candidate if candidate.suffix == ".json" else _metadata_path_for(candidate)
+        metadata_path = (
+            candidate if candidate.suffix == ".json" else _metadata_path_for(candidate)
+        )
         return _load_entry(metadata_path)
 
     matches = [
@@ -70,7 +73,11 @@ def format_timestamp(timestamp: str | None) -> str:
     if not timestamp:
         return "unknown"
     try:
-        return datetime.fromisoformat(timestamp).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+        return (
+            datetime.fromisoformat(timestamp)
+            .astimezone()
+            .strftime("%Y-%m-%d %H:%M:%S %Z")
+        )
     except ValueError:
         return timestamp
 

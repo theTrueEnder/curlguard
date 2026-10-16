@@ -57,7 +57,9 @@ def test_quarantine_inspect_command_shows_metadata(monkeypatch, tmp_path, capsys
     monkeypatch.setenv("CURLGUARD_MODE", "per-user")
     monkeypatch.setenv("CURLGUARD_QUARANTINE", str(quarantine_dir))
 
-    with patch.object(sys, "argv", ["curlguard", "quarantine", "inspect", payload_path.name]):
+    with patch.object(
+        sys, "argv", ["curlguard", "quarantine", "inspect", payload_path.name]
+    ):
         exit_code = main()
 
     captured = capsys.readouterr()
@@ -72,7 +74,9 @@ def test_quarantine_inspect_command_reports_missing_item(monkeypatch, tmp_path, 
     monkeypatch.setenv("CURLGUARD_MODE", "per-user")
     monkeypatch.setenv("CURLGUARD_QUARANTINE", str(quarantine_dir))
 
-    with patch.object(sys, "argv", ["curlguard", "quarantine", "inspect", "missing-item"]):
+    with patch.object(
+        sys, "argv", ["curlguard", "quarantine", "inspect", "missing-item"]
+    ):
         exit_code = main()
 
     captured = capsys.readouterr()

@@ -1,9 +1,9 @@
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-import pytest
-from curlguard.scanner import YaraScanner, ScanResult
+from curlguard.scanner import ScanResult, YaraScanner
 
 
 def test_scanner_import():

@@ -1,0 +1,9 @@
+{
+  "retrieved": "2026-10-16",
+  "purpose": "Unexecuted official installer snapshots for false-positive regression scanning only",
+  "files": {
+    "rustup.sh": {"url": "https://sh.rustup.rs", "sha256": "7d0ea0f8eba7fa1ebfe998091cd7ec4501e33ec5ca6b884eb4d894d7da5170af"},
+    "uv.sh": {"url": "https://astral.sh/uv/install.sh", "sha256": "7c482d409673a53f4d9bd34ae95c9166be3b8d89ca82f27dd7bca3cab457afff"},
+    "nvm.sh": {"url": "https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh", "sha256": "2d8359a64a3cb07c02389ad88ceecd43f2fa469c06104f92f98df5b6f315275f"}
+  }
+}
