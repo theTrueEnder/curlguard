@@ -163,7 +163,7 @@ def test_candidate_failure_preserves_previous_runtime(tmp_path, fail_at):
             else "venv"
         )
         if stage == "venv":
-            Path(command[-1]).mkdir()
+            Path(command[-1]).mkdir(exist_ok=True)
         if stage == fail_at:
             raise subprocess.CalledProcessError(1, command)
         return subprocess.CompletedProcess(
@@ -185,7 +185,12 @@ def test_candidate_failure_preserves_previous_runtime(tmp_path, fail_at):
         patch.object(module.subprocess, "run", side_effect=run),
         pytest.raises(subprocess.CalledProcessError),
     ):
-        module.install(args)
+        previous_mask = os.umask(0o077)
+        try:
+            module.install(args)
+        finally:
+            restored_mask = os.umask(previous_mask)
+            assert restored_mask == 0o077
     assert list(prefix.iterdir()) == [previous]
     assert (previous / "sentinel").read_text() == "preserved"
     pip_calls = [c for c in calls if "pip" in c]
