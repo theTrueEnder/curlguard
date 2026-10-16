@@ -37,8 +37,8 @@ For example: `python -m pytest tests/test_arguments.py tests/test_downloads.py`.
 The full verification commands are:
 
 ```bash
-ruff check src tests scripts/validate-wsl-updates.py
-ruff format --check src tests scripts/validate-wsl-updates.py
+ruff check src tests scripts/validate-wsl-updates.py scripts/install-runtime.py
+ruff format --check src tests scripts/validate-wsl-updates.py scripts/install-runtime.py
 python -m pytest
 ```
 
@@ -64,3 +64,26 @@ remain searchable for rule work. The historical `.sisyphus/plans/curlguard.md`
 is already excluded by ripgrep's default hidden-file behavior; read it explicitly
 only for historical context. Use `rg --hidden` when intentionally searching hidden
 project files, such as CI configuration.
+
+## Distribution and redesign verification
+
+`tests/test_distribution.py` builds wheel and sdist in an isolated source copy;
+`python -m build` builds the wheel from that sdist. Installed-artifact checks import
+from a separate installation outside the checkout with source injection disabled.
+The development extra includes `build`. Mandatory tests do not download artifacts
+or execute fixtures. Installer-failure tests use isolated paths and injected
+subprocess failures; real installation smoke checks must use a temporary HOME,
+a private prefix and an isolated distro-curl layout, never live system paths.
+
+`test_policy.py` tests pre-publication hashes, scoped exceptions and transport;
+`test_findings.py` tests inert corpus findings and real compiler worker cleanup;
+`test_auto_updater.py` signs with ephemeral keys and mocks only update HTTP.
+Existing differential curl tests explicitly select compatibility settings; separate
+edition-default tests verify the branch's actual shipped strictness and overrides.
+
+Shared fixes flow from `codex/general-users` into `codex/security-users`. The latter
+changes only the shipped edition/default module and its README audience statement
+unless an explicitly gated security-only feature is added. Keep runtime imports
+pointing at the tested worktree or installed artifact when reusing development
+interpreters. See the [redesign plan](plans/security-redesign.md) and
+[follow-on use cases](plans/underserved-use-cases.md).

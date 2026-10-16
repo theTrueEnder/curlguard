@@ -1,440 +1,188 @@
 # curlguard
 
-`curlguard` is a Linux-first safety wrapper for `curl` that grows toward a safer day-to-day `curl` experience without trying to replace the real tool.
+curlguard is a Linux-first curl wrapper and explicit download tool. It stages
+supported HTTP/HTTPS downloads, scans their bytes with YARA, evaluates transport
+and artifact policy, and publishes only after those checks finish.
 
-Instead of streaming remote content directly into `bash`, `curlguard` downloads supported requests with the real system `curl`, scans the payload with YARA rules, warns on insecure transport, applies lightweight trust policy, and quarantines suspicious content by default.
+A scan with no matches is not proof that an artifact is safe. SHA-256 verification
+checks expected bytes; it does not authenticate a publisher. Publisher-signature
+verification is follow-on work.
 
-## Why it exists
+## Editions
 
-Commands like this are convenient:
+The current branch is **codex/general-users**. The maintained security variant is
+**codex/security-users**. They share the download/scanner/policy implementation;
+`edition.py` selects shipped defaults. Merge shared fixes from general into security.
 
-```bash
-curl -fsSL https://example.com/install.sh | bash
-```
+| Setting | General users | Security users |
+|---|---|---|
+| Unsupported curl request | Warn and pass through unchanged | Block |
+| Unavailable/failed scan | Warn and deliver | Block |
+| Unsuppressed finding | Quarantine | Quarantine |
+| Initial HTTP / certificate bypass | Warn | Block |
+| Minimum enforced TLS | Native curl behavior | 1.2 |
+| Redirect protocols | Native curl behavior | HTTPS |
+| Expected SHA-256 | Optional | Required |
+| Configured remote rule feed | Warn if unavailable/expired | Require an accepted, unexpired generation |
 
-They are also a natural target for watering-hole and supply-chain attacks:
+Settings are deliberately changeable. For example, the security edition can allow
+unpinned downloads with `CURLGUARD_REQUIRE_SHA256=false`; supplied hashes still
+must match. Resolved settings and edition appear in help, health and download audit.
+These are voluntary user-space PATH wrappers. Absolute `/usr/bin/curl` calls,
+other download clients and secondary installer downloads remain outside coverage.
 
-- a trusted install script is replaced at the source
-- a CDN or redirect target serves a poisoned payload
-- an upstream compromise turns a previously safe one-liner into remote code execution
-- insecure TLS options weaken the fetch path
-
-`curlguard` is designed to reduce that risk by inserting a review point before delivery.
-
-## What the tool does today
-
-- intercepts supported single-URL download flows
-- downloads to a temporary file before delivery
-- scans content with built-in, user, and auto-updated YARA rules
-- warns on insecure transport and downgraded TLS options
-- supports configurable flagged-content policy: `quarantine`, `prompt`, `block`, or `allow`
-- supports lightweight trust decisions with trusted hosts and trusted SHA-256 checksums
-- writes quarantine metadata alongside quarantined payloads
-- logs activity to JSON Lines audit logs
-- supports configurable behavior when scanning is unavailable
-
-## Current scope
-
-Best-supported path:
-
-- Linux
-- single-URL downloads
-- installer-style commands
-- `curl ... | bash`
-- `curl ... -o file`
-- `curl ... -O`
-
-Requests outside that path are passed through to the real `curl`.
-
-Update workflows now include scanned resume, conditional/ETag requests, and common
-status/timing `--write-out` formats. Unsupported features are audited as unscanned;
-set `CURLGUARD_UNSUPPORTED_POLICY=block` to reject them before network activity.
-See [update reliability and failure handling](docs/update-reliability.md) for the
-supported feature boundary, migration, configuration, and validation details.
-
-### Known pass-through cases
-
-The wrapper currently defers to the real `curl` for flows such as:
-
-- `-I`, `--head`
-- `-T`, `--upload-file`
-- `-F`, `--form`
-- `-d`, `--data`, `--data-raw`, `--data-binary`, `--data-urlencode`
-- `--next`
-- `-J`, `--remote-header-name`
-- multi-URL invocations
-
-## How it works
-
-```text
-curl command
-   |
-   +-- unsupported request shape?
-   |      |
-   |      +-- pass through to the real curl
-   |      +-- write audit log entry with scan_result=skipped
-   |
-   +-- supported single-URL request
-          |
-          +-- detect insecure transport / TLS settings
-          +-- download with the real curl to a temp file
-          +-- scan with YARA
-          +-- check lightweight trust policy
-                 |
-                 +-- clean        -> deliver
-                 +-- flagged      -> quarantine / prompt / block / allow
-                 +-- unavailable  -> warn or block, depending on policy
-                 +-- error        -> warn or block, depending on policy
-```
-
-## Flagged content handling
-
-By default, suspicious content is quarantined and not delivered.
-
-You can choose one of four flagged-content policies:
-
-- `quarantine` — store the file locally and stop delivery
-- `prompt` — open the interactive terminal review prompt
-- `block` — refuse delivery and discard the temporary file
-- `allow` — deliver the file with a warning
-
-Set it with:
+## Commands
 
 ```bash
-export CURLGUARD_MATCH_POLICY=quarantine
-```
-
-When `prompt` is enabled, `curlguard` opens an interactive terminal prompt and offers three actions:
-
-- `Block`
-- `Quarantine`
-- `Allow`
-
-If no interactive terminal is available, `curlguard` blocks the download instead of hanging.
-
-## Trust controls
-
-`curlguard` stays lightweight by keeping trust configuration file- and env-based.
-
-It can auto-allow flagged content when either of these matches:
-
-- the payload SHA-256 is in the trusted checksum list
-- the request host is in the trusted host list
-
-Environment-based trust:
-
-```bash
-export CURLGUARD_TRUSTED_HOSTS=downloads.example.com,artifacts.example.com
-export CURLGUARD_TRUSTED_SHA256=0123...,abcd...
-```
-
-File-based trust:
-
-```json
-{
-  "hosts": ["downloads.example.com"],
-  "sha256": ["0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]
-}
-```
-
-Save that file as:
-
-- per-user: `~/.curlguard/trust.json`
-- system-wide: `/var/lib/curlguard/trust.json`
-
-Or point to a custom location:
-
-```bash
-export CURLGUARD_TRUST_FILE=/path/to/trust.json
-```
-
-## Quarantine inspection
-
-Quarantined payloads stay file-based and easy to inspect.
-
-List everything currently in quarantine:
-
-```bash
+curlguard fetch https://example.com/tool.sh -o tool.sh --sha256 <64-hex-digest>
+curlguard doctor --json
+curlguard rules status --json
+curlguard rules update
 curlguard quarantine list
+curlguard quarantine inspect <identifier>
 ```
 
-Inspect one payload by name, prefix, or metadata path:
+`fetch` supports one URL, optional output and optional expected hash; unknown options
+are errors. It follows permitted redirects and never executes content. Do not take
+a checksum supplied by the same compromised download as an independent trust anchor.
 
-```bash
-curlguard quarantine inspect 1713900000_payload.download
-```
-
-Each quarantined payload keeps a JSON sidecar with:
-
-- capture time
-- source URL
-- matched rules
-- SHA-256
-- payload size
+The installed `curl` wrapper accepts the supported native argument shapes, including
+`-fsSL`, `-o`, `-O`, resume, conditional/ETag requests and common write-out fields.
+stdout is buffered until policy permits delivery. Uploads, request bodies, multiple
+URLs, streaming, custom/implicit curl configs and other unmodeled features are
+unsupported; general users get a warning and unchanged native invocation. Required
+or explicit hashes, or any configured artifact pins, force unsupported commands
+to block rather than bypass verification.
 
 ## Installation
 
-### Per-user install
+Use Linux/WSL, Python 3.10+, pip/venv, and curl 7.70+. Wheel building may require
+native build tools/libyara development headers when compatible binary dependencies
+are unavailable. Install these prerequisites separately; the installers do not
+repair system packages.
 
 ```bash
 git clone https://github.com/thetrueender/curlguard.git
 cd curlguard
+git checkout codex/general-users  # or codex/security-users
 bash scripts/install-peruser.sh
-source ~/.bashrc
+export PATH="$HOME/.local/bin:$PATH"
+curlguard doctor --json
 ```
 
-This installs the wrapper at `~/.local/bin/curl` and keeps the real system `curl` in place.
+For a system wrapper, run `bash scripts/install-systemwide.sh` as your regular user.
+The script builds without privilege, then requests sudo to install a privately
+staged, root-owned runtime under `/opt/curlguard`. A sudo invocation with a normal
+`SUDO_USER` re-enters the build as that user; direct root-only builds are refused.
 
-### System-wide install
+Per-user runtimes live under `~/.local/share/curlguard`. Both installers use built
+wheels and versioned virtual environments. They validate a candidate before
+replacing the owned `curl` and `curlguard` wrappers. System wrappers live under
+`/usr/local/bin`; the package-owned `/usr/bin/curl` remains untouched. An unrelated
+wrapper/CLI executable is never silently replaced. Keep previous runtimes until
+you decide they are no longer needed.
 
-```bash
-git clone https://github.com/thetrueender/curlguard.git
-cd curlguard
-sudo bash scripts/install-systemwide.sh
-```
+Production installation does not use editable packages or global pip modifications.
+For old editable installations, remove their old console entry point only after
+checking its ownership and retaining the previous runtime. See
+[migration and policy](docs/update-reliability.md).
 
-This installs the wrapper at `/usr/local/bin/curl` and leaves the package-owned
-`/usr/bin/curl` untouched. Absolute `/usr/bin/curl` calls bypass scanning.
-Legacy installations with `/usr/bin/curl.real` require the installer's explicit
-`--migrate-legacy` mode; it reinstalls and verifies the current distro package.
+## Policies and hashes
 
-### Verify
-
-```bash
-which curl
-curlguard --help
-```
-
-Expected result:
-
-- per-user install: `~/.local/bin/curl`
-- system-wide install: `/usr/local/bin/curl`
-
-
-## Testing
-
-### True positive: end-to-end prompt flow
-
-Start the synthetic suspicious sample server:
-
-```bash
-python3 examples/true_positive/start_server.py
-```
-
-In another terminal:
-
-```bash
-curl http://127.0.0.1:8888/test.sh | bash
-```
-
-Expected behavior:
-
-- `curlguard` reports suspicious content
-- with the default policy, the payload is quarantined
-- with `CURLGUARD_MATCH_POLICY=prompt`, an interactive review prompt opens
-- choosing `Block` or `Quarantine` prevents the script from reaching `bash`
-
-### True negative: clean content should pass
-
-Start the clean sample server:
-
-```bash
-python3 examples/true_negative/start_server.py
-```
-
-In another terminal:
-
-```bash
-curl http://127.0.0.1:8889/install.sh -o /tmp/curlguard-demo.sh
-```
-
-Expected behavior:
-
-- the file downloads without opening the review prompt
-- `curlguard` prints where it saved the file, along with its size and SHA-256
-- no suspicious rules are triggered
-
-### Scanner-only sample
-
-The repository includes a synthetic suspicious sample at `examples/known_malware/sample.sh`.
-
-You can validate it directly with:
-
-```bash
-bash examples/known_malware/test_detection.sh
-```
-
-### Automated tests
-
-```bash
-python -m pytest
-```
-
-The automated suite currently covers:
-
-- true positives
-- true negatives
-- scan-unavailable behavior
-- quarantine flow
-- SSL blocking behavior
-- temp-file download handling
-- TUI decision-path behavior
-
-## Dependencies
-
-`curlguard` currently expects:
-
-- Python 3.10+
-- `yara-python`
-- `textual`
-- `requests`
-- `httpx`
-
-The install scripts try to use distro packages for `python3-yara`, `python3-requests`, and `python3-httpx`, and `pip` for `textual`.
-
-## Detection sources
-
-Rules are loaded from these locations, in this order:
-
-1. built-in rules in `src/curlguard/rules/foundation.yar`
-2. user rules in `~/.curlguard/rules/` or `/var/lib/curlguard/rules/`
-3. auto-updated rules fetched from `CURLGUARD_UPDATE_URL`
-
-The built-in rules currently look for patterns such as:
-
-- suspicious `curl ... | bash`
-- base64-decoded shell payloads
-- obfuscated shell execution
-- malware-style headers and cryptominer indicators
-- suspicious network IOCs
-
-## TLS and transport checks
-
-`curlguard` currently detects and warns on transport issues such as:
-
-- `--insecure`
-- `-k`
-- `--sslv3`
-- `--tlsv1.0`
-- `--tlsv1.1`
-- `http://...` URLs
-
-Blocking can be enabled for blocking-severity cases with:
-
-```bash
-export CURLGUARD_SSL_WARN_ONLY=false
-```
-
-## Scan failure policy
-
-If scanning is unavailable or errors out, `curlguard` can either:
-
-- warn and deliver
-- block the download
-
-Control this with:
-
-```bash
-export CURLGUARD_SCAN_FAILURE_MODE=warn
-export CURLGUARD_SCAN_FAILURE_MODE=block
-```
-
-The default is `warn`.
-
-## Audit logging
-
-Every invocation handled by the wrapper is written as JSON Lines.
-
-Default log locations (regular users use their own state even with the system wrapper):
-
-- per-user: `~/.curlguard/audit.log`
-- system-wide as root: `/var/log/curlguard/audit.log`
-
-Example entries:
+Set `CURLGUARD_POLICY_FILE` to a schema-1 JSON file, or use the default mode-specific
+`policy.json`. A minimal artifact record is:
 
 ```json
-{"timestamp":"2024-01-01T12:00:00+00:00","url":"https://example.com/install.sh","scan_result":"clean","duration_ms":150.0,"exit_code":0}
-{"timestamp":"2024-01-01T12:01:00+00:00","url":"https://evil.example/payload.sh","scan_result":"flagged","rules_triggered":["suspicious_pipe_bash"],"user_decision":"block","exit_code":1}
-{"timestamp":"2024-01-01T12:02:00+00:00","url":"https://example.com/install.sh","scan_result":"unavailable","user_decision":"allow","exit_code":0}
+{
+  "schema_version": 1,
+  "artifacts": [{
+    "id": "tool-release",
+    "url": "https://example.com/tool.sh",
+    "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  }],
+  "exceptions": []
+}
 ```
 
-Current `scan_result` values include:
+The default permitted final origin is the source origin. Add
+`allowed_final_origins` for explicit alternatives. Matching normalizes scheme,
+host and default port while preserving path and query semantics. Wildcards and
+implicit subdomain trust are not supported. Query strings are redacted in audit.
 
-- `clean`
-- `flagged`
-- `unavailable`
-- `error`
-- `skipped`
+`CURLGUARD_EXPECTED_SHA256` provides a hash for wrapper invocations. Conflicts
+between command/environment and policy hashes fail before network activity.
+A matching hash never automatically suppresses a malware finding. Detection
+exceptions additionally require exact content/source, specific rules, an expiry
+and an explanation; see the policy documentation.
 
-Audit events also include the delivered or quarantined file checksum, size, and decision reason.
+## Signed rule updates
+
+Bundled/local rules always participate. Remote updates require signed, versioned
+Ed25519 bundles with locally provisioned public keys. Raw remote YARA files are
+rejected. Configure `CURLGUARD_UPDATE_URL`, `CURLGUARD_UPDATE_FEED_ID` and
+`CURLGUARD_UPDATE_KEYS_FILE`, then run `curlguard rules update` explicitly.
+Ordinary downloads never fetch rule updates. See
+[signed-feed publishing](docs/update-reliability.md#signed-rule-feeds).
 
 ## Configuration
 
-All runtime configuration is currently environment-variable based.
+| Variable | Purpose |
+|---|---|
+| `CURLGUARD_MODE` | `per-user` or `system-wide`; installed wrappers set it |
+| `CURLGUARD_REAL_CURL_PATH` | Absolute real curl executable |
+| `CURLGUARD_LOG_PATH` | JSONL audit path |
+| `CURLGUARD_RULES_DIR` | Colon-separated local rule directories |
+| `CURLGUARD_QUARANTINE` | Quarantine path; its parent also holds signed-feed state |
+| `CURLGUARD_POLICY_FILE` | Artifact/exception policy file |
+| `CURLGUARD_EXPECTED_SHA256` | Invocation's expected hash |
+| `CURLGUARD_REQUIRE_SHA256` | Require a hash before supported downloads |
+| `CURLGUARD_MATCH_POLICY` | `quarantine`, `block`, `prompt`, or `allow` |
+| `CURLGUARD_SEVERITY_THRESHOLD` | Lowest actionable severity; defaults to `low` (all findings) |
+| `CURLGUARD_SCAN_FAILURE_MODE` | `warn` or `block` |
+| `CURLGUARD_UNSUPPORTED_POLICY` | `passthrough` or `block` |
+| `CURLGUARD_REQUIRE_HTTPS` | Block initial HTTP and restrict initial protocols |
+| `CURLGUARD_VERIFY_CERTIFICATES` | Reject `--insecure` |
+| `CURLGUARD_MIN_TLS` | `none`, `1.0`, `1.1`, `1.2`, `1.3` |
+| `CURLGUARD_REDIRECT_PROTOCOLS` | Allowed redirect protocols, comma-separated `http`/`https`; empty means native |
+| `CURLGUARD_REQUIRE_FRESH_RULES` | Require an unexpired configured remote feed |
+| `CURLGUARD_UPDATE_URL` | Signed bundle HTTPS endpoint |
+| `CURLGUARD_UPDATE_FEED_ID` | Expected signed feed identity |
+| `CURLGUARD_UPDATE_KEYS_FILE` | Locally provisioned Ed25519 public-key file |
+| `CURLGUARD_SCAN_TIMEOUT_SECONDS` | YARA match timeout, default 10 |
+| `CURLGUARD_MAX_SCAN_BYTES` | Scan-size limit, default 256 MiB; not a download/disk budget |
 
-| Variable | Default | Description |
-|---|---|---|
-| `CURLGUARD_MODE` | auto-detect | `per-user` or `system-wide` |
-| `CURLGUARD_LOG_PATH` | mode-specific | Override audit log path |
-| `CURLGUARD_RULES_DIR` | mode-specific | Colon-separated rule directories |
-| `CURLGUARD_QUARANTINE` | mode-specific | Override quarantine directory |
-| `CURLGUARD_REAL_CURL_PATH` | auto-detect | Override the real curl binary path |
-| `CURLGUARD_UPDATE_URL` | unset | URL used for auto-updated rules |
-| `CURLGUARD_UPDATE_INTERVAL_HOURS` | `24` | Rule update interval |
-| `CURLGUARD_SSL_WARN_ONLY` | `true` | Warn on TLS bypass unless a blocking-severity case is configured and this is `false` |
-| `CURLGUARD_MATCH_POLICY` | `quarantine` | `quarantine`, `prompt`, `block`, or `allow` when suspicious content is detected |
-| `CURLGUARD_SCAN_FAILURE_MODE` | `warn` | `warn` to deliver with warning, `block` to fail closed when scanning is unavailable |
-| `CURLGUARD_UNSUPPORTED_POLICY` | `passthrough` | Pass unsupported commands unchanged and audit as unscanned, or `block` before network activity |
-| `CURLGUARD_SCAN_TIMEOUT_SECONDS` | `10` | Positive YARA scan timeout |
-| `CURLGUARD_MAX_SCAN_BYTES` | `268435456` | Positive maximum scannable payload size; exceeding it invokes scan-failure policy |
-| `CURLGUARD_TRUST_FILE` | mode-specific | Optional JSON trust file with `hosts` and `sha256` arrays |
-| `CURLGUARD_TRUSTED_HOSTS` | unset | Comma-separated trusted hosts that can auto-allow flagged content |
-| `CURLGUARD_TRUSTED_SHA256` | unset | Comma-separated trusted SHA-256 checksums that can auto-allow flagged content |
+Booleans accept `true`/`false`; numeric limits must be positive. Legacy broad trust
+settings are rejected. `CURLGUARD_SSL_WARN_ONLY` is deprecated; conflicting legacy
+and new transport settings are rejected. The old update interval variable no
+longer schedules network checks; use an explicit scheduler for `rules update`.
 
-## Exit codes
+## Exit status and audit
 
-`curlguard` uses stable exit codes for its own policy decisions:
+Codes 10/11 indicate suspicious content blocked/quarantined; 12 transport policy;
+13 unsuccessful required scanning/rules; 14 unsupported request; 15 configuration;
+16 internal/delivery failure; 17 missing required or mismatched expected hash.
+Real curl failures and conventional signal statuses are preserved.
 
-- `0` — delivered or allowed
-- `10` — blocked due to suspicious content
-- `11` — quarantined due to suspicious content
-- `12` — blocked by SSL/TLS policy
-- `13` — blocked because scanning failed and fail-closed mode is enabled
-- `14` — unsupported request blocked
-- `15` — invalid configuration
-- `16` — internal, preparation, validation, or delivery failure
+Audit preserves legacy scan statuses and adds schema-1 detection, integrity,
+authenticity, findings, decision, settings and edition evidence. Match excerpts
+are shown only in review, not logged or stored in quarantine sidecars. Audit is
+best effort and redacts URL credentials/query values; it is not tamper-resistant.
 
-Real curl failure codes and conventional `128 + signal` results are preserved.
+## Uninstall and development
 
-## Uninstall
-
-### Per-user
+Run the installed runtime's Python with the appropriate mode:
 
 ```bash
-python3 -c "import sys; sys.path.insert(0, 'src'); from curlguard.curl_manager import CurlManager; CurlManager('per-user').uninstall()"
-rm -rf ~/.curlguard ~/.local/bin/curl
+/path/to/runtime/bin/python -c "from curlguard.curl_manager import CurlManager; CurlManager('per-user').uninstall()"
 ```
 
-### System-wide
+For system wrappers use the root-owned runtime and `CurlManager('system-wide')`
+with sudo. This removes only owned wrappers; it preserves runtimes/state and distro
+curl. Remove specifically selected old runtime/state directories separately when
+no longer needed. Legacy `/usr/bin/curl.real` installations require explicit
+migration, never stale-binary restoration.
 
-```bash
-sudo python3 -c "import sys; sys.path.insert(0, 'src'); from curlguard.curl_manager import CurlManager; CurlManager('system-wide').uninstall()"
-sudo rm -rf /var/lib/curlguard /var/log/curlguard /etc/profile.d/curlguard.sh
-sudo pip uninstall curlguard
-```
-
-The current uninstaller removes only its owned PATH wrapper. It refuses unresolved
-legacy installations and never restores a stale `/usr/bin/curl.real` binary.
-
-## Status
-
-`curlguard` is functional for its primary Linux safe-download path, but it is still an early-stage security tool rather than a drop-in replacement for every `curl` workflow.
-
-If you are evaluating or extending it, start with:
-
-- Linux
-- single-URL downloads
-- installer-style and artifact-download commands
-- YARA-backed pre-delivery scanning
-- quarantine-first handling with file/env-based trust controls
-- the included true-positive and true-negative example servers
+See [development](docs/development.md), [behavior/migration](docs/update-reliability.md),
+[implementation plan](docs/plans/security-redesign.md), and the separate
+[underserved-use-case plan](docs/plans/underserved-use-cases.md). Scan synthetic
+samples and pinned installer fixtures as data only; never execute them.
