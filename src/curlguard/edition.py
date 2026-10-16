@@ -1,4 +1,4 @@
 """Shipped defaults; variant branches change only this module."""
 
-EDITION = "general-users"
-SECURITY = False
+EDITION = "security-users"
+SECURITY = True

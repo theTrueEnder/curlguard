@@ -10,8 +10,8 @@ verification is follow-on work.
 
 ## Editions
 
-The current branch is **codex/general-users**. The maintained security variant is
-**codex/security-users**. They share the download/scanner/policy implementation;
+The current branch is **codex/security-users**. The maintained general variant is
+**codex/general-users**. They share the download/scanner/policy implementation;
 `edition.py` selects shipped defaults. Merge shared fixes from general into security.
 
 | Setting | General users | Security users |
