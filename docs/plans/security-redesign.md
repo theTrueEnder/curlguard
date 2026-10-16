@@ -57,23 +57,23 @@ Do not delete, replace or publish existing refs as part of this work.
 
 ## Acceptance checklist
 
-- [ ] Existing payload parity, resume, cancellation, ETag rollback and preservation
+- [x] Existing payload parity, resume, cancellation, ETag rollback and preservation
   tests pass without executing sample payloads.
-- [ ] Missing, conflicting, mismatching, resumed and conditional hashes behave
+- [x] Missing, conflicting, mismatching, resumed and conditional hashes behave
   before output/ETag publication; missing required pins make no network request.
-- [ ] Wrong/expired exceptions and additional findings do not bypass policy;
+- [x] Wrong/expired exceptions and additional findings do not bypass policy;
   nonempty legacy trust produces migration errors.
-- [ ] Shipped defaults, explicit relaxations and branch audit identity are tested.
-- [ ] Strict transport prevents HTTP/downgrade requests and rejects certificate
+- [x] Shipped defaults, explicit relaxations and branch audit identity are tested.
+- [x] Strict transport prevents HTTP/downgrade requests and rejects certificate
   bypass or incompatible TLS maximums.
-- [ ] Tampering, replay, invalid metadata/signatures, oversized bundles, expiry,
+- [x] Tampering, replay, invalid metadata/signatures, oversized bundles, expiry,
   locking and worker failure preserve the last accepted generation.
-- [ ] Real compiler timeout reaps its worker; worker resource limits are checked.
-- [ ] Wheel, sdist-built wheel and installed scanner work outside the source tree;
+- [x] Real compiler timeout reaps its worker; worker resource limits are checked.
+- [x] Wheel, sdist-built wheel and installed scanner work outside the source tree;
   removing packaged rules is detected as unavailable scanning.
-- [ ] Isolated candidate-install, failed-upgrade, wrapper rollback and uninstall
+- [x] Isolated candidate-install, failed-upgrade, wrapper rollback and uninstall
   tests preserve unrelated executables and the current distro curl.
-- [ ] Both branches pass `ruff check`, `ruff format --check` and complete Linux/WSL
+- [x] Both branches pass `ruff check`, `ruff format --check` and complete Linux/WSL
   pytest runs; supported CI runtime jobs include distribution tests.
 
 Acceptance results are recorded in [redesign-validation.md](../redesign-validation.md).

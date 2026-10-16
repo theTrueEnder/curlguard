@@ -100,6 +100,15 @@ class CurlWrapper:
             self._state.evidence.transport["final_scheme"] = urlsplit(
                 self._state.effective_url or url
             ).scheme
+            if (
+                self._state.evidence.transport["initial_scheme"] == "https"
+                and self._state.evidence.transport["final_scheme"] != "https"
+            ):
+                self._state.evidence.transport["findings"].append("redirect_downgrade")
+                print(
+                    "curlguard: WARNING: redirect ended on insecure transport",
+                    file=sys.stderr,
+                )
             if not self._config.policy.final_allowed(
                 url, self._state.effective_url or url
             ):

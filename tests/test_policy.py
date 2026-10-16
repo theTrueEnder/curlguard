@@ -269,6 +269,50 @@ def test_https_preflight(http_server, cli):
     assert result.returncode == 12 and requests == []
 
 
+def test_general_mode_reports_observed_redirect_downgrade(
+    https_server, http_server, cli, tmp_path
+):
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    https, cert = https_server
+    _, _, server = http_server
+
+    class Destination(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", "5")
+            self.end_headers()
+            self.wfile.write(b"inert")
+
+    destination = ThreadingHTTPServer(("127.0.0.1", 0), Destination)
+    thread = threading.Thread(target=destination.serve_forever, daemon=True)
+    thread.start()
+
+    def redirect(self):
+        self.send_response(302)
+        self.send_header(
+            "Location", f"http://127.0.0.1:{destination.server_port}/artifact"
+        )
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    server.RequestHandlerClass.do_GET = redirect
+    try:
+        result = cli([https, "-L", "--cacert", cert])
+        assert result.returncode == 0 and result.stdout == b"inert"
+        assert b"insecure transport" in result.stderr
+        event = json.loads((tmp_path / "audit.log").read_text().splitlines()[-1])
+        assert "redirect_downgrade" in event["evidence"]["transport"]["findings"]
+    finally:
+        destination.shutdown()
+        destination.server_close()
+        thread.join()
+
+
 def test_https_redirect_cannot_reach_http(https_server, http_server, cli):
     https, cert = https_server
     _, requests, server = http_server

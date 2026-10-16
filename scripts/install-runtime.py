@@ -12,11 +12,18 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import uuid
 from pathlib import Path
 
 
 def install(args):
+    previous_umask = os.umask(0o022 if args.mode == "system-wide" else 0o077)
+    try:
+        return _install(args)
+    finally:
+        os.umask(previous_umask)
+
+
+def _install(args):
     prefix = args.prefix.resolve()
     root = args.root.resolve()
     if args.mode == "system-wide" and root == Path("/") and os.geteuid() != 0:
@@ -45,8 +52,10 @@ def install(args):
         if len(project) != 1:
             raise ValueError("wheelhouse must contain exactly one curlguard wheel")
         digest = hashlib.sha256(project[0].read_bytes()).hexdigest()[:12]
-        runtime = prefix / (
-            project[0].name.split("-")[1] + "-" + digest + "-" + uuid.uuid4().hex[:8]
+        runtime = Path(
+            tempfile.mkdtemp(
+                prefix=project[0].name.split("-")[1] + "-" + digest + "-", dir=prefix
+            )
         )
         # Venv paths are embedded in scripts, so build at the final versioned path.
         subprocess.run([sys.executable, "-m", "venv", str(runtime)], check=True)
