@@ -66,6 +66,9 @@ class CurlManager:
                     "legacy curl.real detected; rerun installer with --migrate-legacy"
                 )
             self._migrate_legacy()
+        cli_path = self._curl_path.with_name("curlguard")
+        if (cli_path.exists() or cli_path.is_symlink()) and not _owned(cli_path):
+            raise ValueError(f"refusing to replace unrelated executable: {cli_path}")
         if self._curl_path.exists() or self._curl_path.is_symlink():
             if not _owned(self._curl_path) and not (
                 self._mode == "per-user" and _legacy_wrapper(self._curl_path)
@@ -85,18 +88,41 @@ class CurlManager:
             "#!/bin/sh\n" + MARKER + "\n"
             f"export CURLGUARD_MODE={self._mode}\n"
             f"export CURLGUARD_REAL_CURL_PATH={shlex.quote(str(self._curl_real))}\n"
-            f'exec {shlex.quote(os.path.abspath(sys.executable))} -m curlguard.cli --as-curl "$@"\n'
+            f'exec {shlex.quote(os.path.abspath(sys.executable))} -I -m curlguard.cli --as-curl "$@"\n'
         )
-        fd, name = tempfile.mkstemp(
-            prefix=".curlguard-install-", dir=self._curl_path.parent
-        )
+        cli_script = script.replace(' --as-curl "$@"', ' "$@"')
+        staged, previous = {}, {}
         try:
-            with os.fdopen(fd, "w") as handle:
-                handle.write(script)
-            os.chmod(name, 0o755)
-            os.replace(name, self._curl_path)
+            for path, content in ((self._curl_path, script), (cli_path, cli_script)):
+                previous[path] = path.read_bytes() if path.exists() else None
+                fd, name = tempfile.mkstemp(
+                    prefix=".curlguard-install-", dir=path.parent
+                )
+                staged[path] = Path(name)
+                with os.fdopen(fd, "w") as handle:
+                    handle.write(content)
+                os.chmod(name, 0o755)
+            committed = []
+            try:
+                for path, temporary in staged.items():
+                    os.replace(temporary, path)
+                    committed.append(path)
+            except BaseException:
+                for path in committed:
+                    if previous[path] is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        fd, rollback = tempfile.mkstemp(
+                            prefix=".curlguard-rollback-", dir=path.parent
+                        )
+                        with os.fdopen(fd, "wb") as handle:
+                            handle.write(previous[path])
+                        os.chmod(rollback, 0o755)
+                        os.replace(rollback, path)
+                raise
         finally:
-            Path(name).unlink(missing_ok=True)
+            for temporary in staged.values():
+                temporary.unlink(missing_ok=True)
 
     def _migrate_legacy(self):
         system = self._root / "usr/bin/curl"
@@ -144,14 +170,20 @@ class CurlManager:
             raise ValueError(
                 "legacy installation requires migration; refusing to restore stale curl.real"
             )
-        if self._curl_path.exists() or self._curl_path.is_symlink():
-            if not _owned(self._curl_path) and not (
-                self._mode == "per-user" and _legacy_wrapper(self._curl_path)
-            ):
-                raise ValueError(
-                    f"refusing to remove unrelated executable: {self._curl_path}"
+        paths = (self._curl_path, self._curl_path.with_name("curlguard"))
+        for path in paths:
+            if (
+                (path.exists() or path.is_symlink())
+                and not _owned(path)
+                and not (
+                    path == self._curl_path
+                    and self._mode == "per-user"
+                    and _legacy_wrapper(path)
                 )
-            self._curl_path.unlink()
+            ):
+                raise ValueError(f"refusing to remove unrelated executable: {path}")
+        for path in paths:
+            path.unlink(missing_ok=True)
 
     def call_real_curl(self, args, env=None):
         return subprocess.run(

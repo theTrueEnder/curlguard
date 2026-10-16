@@ -51,6 +51,9 @@ class AuditEvent:
     interception_reason: str | None = None
     effective_url: str | None = None
     ruleset_id: str | None = None
+    edition: str | None = None
+    settings: dict = field(default_factory=dict)
+    evidence: dict = field(default_factory=dict)
 
 
 class AuditLogger:

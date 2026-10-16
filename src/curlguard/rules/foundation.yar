@@ -6,6 +6,8 @@
 rule base64_encoded_shell {
   meta:
     description = "Detects base64-encoded shell command payloads"
+    category = "behavior"
+    confidence = "medium"
     severity = "high"
   strings:
     $pipe_exec = /(base64\s+(-d|--decode)|openssl\s+base64\s+-d)[ \t]*\|[ \t]*(ba)?sh\b/i
@@ -17,6 +19,8 @@ rule base64_encoded_shell {
 rule suspicious_pipe_bash {
   meta:
     description = "Detects curl/wget piped to bash - common install attack"
+    category = "behavior"
+    confidence = "medium"
     severity = "critical"
   strings:
     $curl_pipe = /curl\s+[^\|]+\|\s*bash/
@@ -29,6 +33,8 @@ rule suspicious_pipe_bash {
 rule obfuscated_download {
   meta:
     description = "Detects obfuscated download with eval/exec"
+    category = "behavior"
+    confidence = "medium"
     severity = "high"
   strings:
     $eval_sh = /eval\s+\$/i
@@ -41,6 +47,8 @@ rule obfuscated_download {
 rule known_malware_header {
   meta:
     description = "Detects common malware file signatures"
+    category = "behavior"
+    confidence = "medium"
     severity = "critical"
   strings:
     $shebang_bash = /#!\/bin\/(ba)?sh/
@@ -53,6 +61,8 @@ rule known_malware_header {
 rule network_ioc {
   meta:
     description = "Detects suspicious network indicators"
+    category = "indicator"
+    confidence = "low"
     severity = "medium"
   strings:
     $ip_literal = /[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/

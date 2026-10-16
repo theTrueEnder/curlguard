@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 from textual.app import App, ComposeResult
@@ -12,6 +13,13 @@ from textual.binding import Binding
 from textual.containers import Container, Horizontal
 from textual.reactive import reactive
 from textual.widgets import Button, Static
+
+from curlguard.evidence import safe_text
+
+
+class PlainStatic(Static):
+    def __init__(self, content="", **kwargs):
+        super().__init__(safe_text(content), markup=False, **kwargs)
 
 
 class CurlGuardTUI(App[int]):
@@ -86,33 +94,46 @@ class CurlGuardTUI(App[int]):
     url = reactive("")
     ssl_warn = reactive(False)
 
-    def __init__(self, rules: list[str], url: str, ssl_warn: bool = False) -> None:
+    def __init__(
+        self, rules: list[str], url: str, ssl_warn: bool = False, findings=None
+    ) -> None:
         super().__init__()
+        self.findings = findings or []
         self.matched_rules = rules
         self.url = url
         self.ssl_warn = ssl_warn
 
     def compose(self) -> ComposeResult:
-        yield Static("curlguard review required", id="title")
-        yield Static(
+        yield PlainStatic("curlguard review required", id="title")
+        yield PlainStatic(
             "Suspicious content was detected before delivery. Choose block, quarantine, or allow.",
             id="subtitle",
         )
         if self.ssl_warn:
-            yield Static(
+            yield PlainStatic(
                 "TLS warning: the request used an insecure or downgraded transport option.",
                 id="ssl_warning",
             )
-        yield Container(Static(f"Source URL: {self.url}"), classes="panel")
+        yield Container(PlainStatic(f"Source URL: {self.url}"), classes="panel")
         yield Container(
-            Static(f"Matched rules: {', '.join(self.matched_rules)}"),
+            PlainStatic(f"Matched rules: {', '.join(self.matched_rules)}"),
             classes="panel",
         )
+        for finding in self.findings[:32]:
+            yield Container(
+                PlainStatic(
+                    f"{finding.get('rule')}: {finding.get('severity')} ({finding.get('confidence')})\n"
+                    f"{finding.get('description')}\n"
+                    f"Locations: {finding.get('locations', [])}\n"
+                    f"Evidence: {finding.get('evidence', [])}"
+                ),
+                classes="panel",
+            )
         with Horizontal(id="actions"):
             yield Button("Block [B]", id="block_btn", variant="error")
             yield Button("Quarantine [Q]", id="quarantine_btn", variant="warning")
             yield Button("Allow [A]", id="allow_btn", variant="success")
-        yield Static(
+        yield PlainStatic(
             "Keys: [B] block   [Q] quarantine   [A] allow   [Ctrl+C] cancel", id="keys"
         )
 
@@ -137,10 +158,10 @@ class CurlGuardTUI(App[int]):
         self.exit(3)
 
 
-def run_tui(rules: list[str], url: str, ssl_warn: bool = False) -> int:
+def run_tui(rules: list[str], url: str, ssl_warn: bool = False, findings=None) -> int:
     """Run the Textual app in the current process and return a decision code."""
 
-    app = CurlGuardTUI(rules=rules, url=url, ssl_warn=ssl_warn)
+    app = CurlGuardTUI(rules=rules, url=url, ssl_warn=ssl_warn, findings=findings)
     result = app.run()
     if isinstance(result, int):
         return result
@@ -155,13 +176,16 @@ def _interactive_tty_path() -> Path | None:
     return None
 
 
-def _launch_tui_subprocess(rules: list[str], url: str, ssl_warn: bool) -> int:
+def _launch_tui_subprocess(
+    rules: list[str], url: str, ssl_warn: bool, findings=None
+) -> int:
     tty_path = _interactive_tty_path()
     if tty_path is None:
         raise RuntimeError("no interactive terminal is available")
 
     cmd = [
         sys.executable,
+        "-I",
         "-m",
         "curlguard.tui",
         "--rules-json",
@@ -169,6 +193,8 @@ def _launch_tui_subprocess(rules: list[str], url: str, ssl_warn: bool) -> int:
         "--url",
         url,
     ]
+    if findings:
+        cmd += ["--findings-json", json.dumps(findings)]
     if ssl_warn:
         cmd.append("--ssl-warn")
 
@@ -188,7 +214,12 @@ def prompt_user(scan_result, url: str, ssl_warn: bool = False) -> str:
     code_map = {0: "allow", 1: "block", 2: "quarantine", 3: "block"}
 
     try:
-        exit_code = _launch_tui_subprocess(rules=rules, url=url, ssl_warn=ssl_warn)
+        exit_code = _launch_tui_subprocess(
+            rules=rules,
+            url=url,
+            ssl_warn=ssl_warn,
+            findings=[asdict(f) for f in getattr(scan_result, "findings", [])][:32],
+        )
     except Exception as exc:
         print(
             f"curlguard: unable to open an interactive review prompt ({exc}); blocking download.",
@@ -212,6 +243,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Show the TLS warning banner in the interface",
     )
+    parser.add_argument("--findings-json")
     args = parser.parse_args(argv)
 
     try:
@@ -223,7 +255,17 @@ def main(argv: list[str] | None = None) -> int:
         rules = []
 
     normalized_rules = [str(rule) for rule in rules]
-    return run_tui(rules=normalized_rules, url=args.url, ssl_warn=args.ssl_warn)
+    kwargs = {}
+    if args.findings_json:
+        findings = json.loads(args.findings_json)
+        if not isinstance(findings, list) or not all(
+            isinstance(f, dict) for f in findings
+        ):
+            parser.error("findings must be objects")
+        kwargs["findings"] = findings[:32]
+    return run_tui(
+        rules=normalized_rules, url=args.url, ssl_warn=args.ssl_warn, **kwargs
+    )
 
 
 if __name__ == "__main__":
