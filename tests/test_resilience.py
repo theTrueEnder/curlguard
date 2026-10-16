@@ -37,6 +37,14 @@ def wrapper(tmp_path):
         tmp_path / "audit.log",
         quarantine_dir=tmp_path / "quarantine",
         real_curl_path=Path(os.environ.get("CURLGUARD_TEST_CURL", "/usr/bin/curl")),
+        require_sha256=False,
+        require_https=False,
+        verify_certificates=False,
+        min_tls=None,
+        redirect_protocols=(),
+        require_fresh_rules=False,
+        scan_failure_mode="warn",
+        unsupported_policy="passthrough",
     )
     return CurlWrapper(
         config, YaraScanner(), AuditLogger(config.log_path), SslBypassDetector()
@@ -202,15 +210,9 @@ def test_unwritable_log_does_not_change_result(wrapper, http_server, tmp_path, c
     assert "logging unavailable" in capfd.readouterr().err
 
 
-def test_redirect_host_trust_requires_both_hosts(wrapper):
+def test_removed_host_trust_is_rejected(wrapper):
     wrapper._config.trusted_hosts = {"trusted.example"}
-    wrapper._effective_url = "https://untrusted.example/payload"
-    assert wrapper._get_trust_reason("https://trusted.example/a", "a" * 64) is None
-    wrapper._effective_url = "https://cdn.trusted.example/payload"
-    assert (
-        wrapper._get_trust_reason("https://trusted.example/a", "a" * 64)
-        == "trusted host"
-    )
+    assert wrapper.dispatch(["-q", "https://trusted.example/a"]) == 15
 
 
 def test_audit_redacts_credentials_and_query(tmp_path):
@@ -299,12 +301,10 @@ def test_blocked_unsupported_does_not_fetch_rule_updates(wrapper):
     updater.assert_not_called()
 
 
-def test_custom_update_cache_is_included_on_next_start(monkeypatch, tmp_path):
-    monkeypatch.setenv("CURLGUARD_QUARANTINE", str(tmp_path / "custom/quarantine"))
+def test_legacy_raw_update_cache_is_not_loaded(monkeypatch, tmp_path):
     monkeypatch.setenv("CURLGUARD_UPDATE_URL", "https://rules.example/update")
-    monkeypatch.setenv("CURLGUARD_RULES_DIR", str(tmp_path / "other-rules"))
-    monkeypatch.setenv("CURLGUARD_TRUST_FILE", str(tmp_path / "missing"))
-    assert tmp_path / "custom/rules" in load_config().rules_dirs
+    monkeypatch.setenv("CURLGUARD_QUARANTINE", str(tmp_path / "quarantine"))
+    assert tmp_path / "rules" not in load_config().rules_dirs
 
 
 def test_install_remove_and_package_replacement(tmp_path):

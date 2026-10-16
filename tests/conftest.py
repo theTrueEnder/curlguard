@@ -146,12 +146,24 @@ def cli(tmp_path):
         CURLGUARD_LOG_PATH=str(tmp_path / "audit.log"),
         CURLGUARD_QUARANTINE=str(tmp_path / "quarantine"),
         CURLGUARD_SCAN_FAILURE_MODE="block",
+        CURLGUARD_REQUIRE_SHA256="false",
+        CURLGUARD_REQUIRE_HTTPS="false",
+        CURLGUARD_VERIFY_CERTIFICATES="false",
+        CURLGUARD_MIN_TLS="none",
+        CURLGUARD_REDIRECT_PROTOCOLS="",
+        CURLGUARD_REQUIRE_FRESH_RULES="false",
+        CURLGUARD_UNSUPPORTED_POLICY="passthrough",
         CURLGUARD_REAL_CURL_PATH=os.environ.get("CURLGUARD_TEST_CURL", "/usr/bin/curl"),
     )
 
-    def invoke(args, *, guarded=True, overrides=None):
+    def invoke(args, *, guarded=True, overrides=None, management=False):
         command = (
-            [sys.executable, "-m", "curlguard.cli", "--as-curl"]
+            [
+                sys.executable,
+                "-m",
+                "curlguard.cli",
+                *([] if management else ["--as-curl"]),
+            ]
             if guarded
             else [env["CURLGUARD_REAL_CURL_PATH"]]
         )

@@ -21,9 +21,9 @@ def stub_download(wrapper, downloaded):
     wrapper._scanner.ruleset_id = None
 
     def fetch(args):
-        wrapper._metadata = {"http_code": 200}
-        wrapper._etag = None
-        wrapper._etag_snapshot = None
+        wrapper._state.metadata = {"http_code": 200}
+        wrapper._state.etag = None
+        wrapper._state.etag_snapshot = None
         return downloaded
 
     wrapper._download_to_temp = fetch
@@ -37,6 +37,14 @@ def temp_config(tmp_path):
         rules_dirs=[tmp_path / "rules"],
         quarantine_dir=tmp_path / "quarantine",
         real_curl_path=Path("/usr/bin/curl"),
+        require_sha256=False,
+        require_https=False,
+        verify_certificates=False,
+        min_tls=None,
+        redirect_protocols=(),
+        require_fresh_rules=False,
+        scan_failure_mode="warn",
+        unsupported_policy="passthrough",
     )
     config.quarantine_dir.mkdir(parents=True, exist_ok=True)
     return config
@@ -100,12 +108,10 @@ def test_config_env_override(monkeypatch):
     monkeypatch.setenv("CURLGUARD_MODE", "per-user")
     monkeypatch.setenv("CURLGUARD_SCAN_FAILURE_MODE", "block")
     monkeypatch.setenv("CURLGUARD_MATCH_POLICY", "prompt")
-    monkeypatch.setenv("CURLGUARD_TRUSTED_HOSTS", "downloads.example.com")
     config = load_config()
     assert config.log_path == Path("/tmp/override.log")
     assert config.scan_failure_mode == "block"
     assert config.match_policy == "prompt"
-    assert "downloads.example.com" in config.trusted_hosts
 
 
 def test_config_loads_trust_file(monkeypatch, tmp_path):
@@ -121,11 +127,8 @@ def test_config_loads_trust_file(monkeypatch, tmp_path):
     monkeypatch.setenv("CURLGUARD_MODE", "per-user")
     monkeypatch.setenv("CURLGUARD_TRUST_FILE", str(trust_file))
 
-    config = load_config()
-
-    assert config.trust_file == trust_file
-    assert "downloads.example.com" in config.trusted_hosts
-    assert "a" * 64 in config.trusted_sha256
+    with pytest.raises(ValueError, match="legacy trust"):
+        load_config()
 
 
 def test_logger_writes_json(tmp_path):
@@ -241,7 +244,7 @@ def test_wrapper_warn_mode_allows_scan_failure(
     event = json.loads(temp_config.log_path.read_text().splitlines()[0])
     assert event["scan_result"] == "unavailable"
     assert event["user_decision"] == "allow"
-    assert event["decision_reason"] == "scan failure policy"
+    assert event["decision_reason"] == "scan_failure_policy"
 
 
 def test_wrapper_clean_download_reports_saved_location(
@@ -303,7 +306,7 @@ def test_wrapper_block_mode_blocks_scan_failure(
     event = json.loads(temp_config.log_path.read_text().splitlines()[0])
     assert event["scan_result"] == "error"
     assert event["user_decision"] == "block"
-    assert event["decision_reason"] == "scan failure policy"
+    assert event["decision_reason"] == "scan_failure_policy"
 
 
 def test_wrapper_default_quarantine_moves_file_and_writes_metadata(
@@ -376,69 +379,10 @@ def test_wrapper_allowed_flagged_download_reports_saved_location(
     assert f"sha256={checksum}" in captured.err
 
 
-def test_wrapper_trusted_host_allows_flagged_download_without_prompt(
-    temp_config, mock_ssl_detector, tmp_path, capsys
-):
+def test_wrapper_rejects_legacy_trust(temp_config, mock_ssl_detector):
     temp_config.trusted_hosts.add("evil.example")
-    scanner = MagicMock()
-    scanner.scan_file.return_value = ScanResult(
-        clean=False,
-        matches=["malware"],
-        rules_triggered=["suspicious_pipe_bash"],
-        scan_time_ms=1.0,
-        status="flagged",
-    )
-    logger = AuditLogger(temp_config.log_path)
-    wrapper = CurlWrapper(temp_config, scanner, logger, mock_ssl_detector)
-
-    downloaded = tmp_path / "trusted.download"
-    downloaded.write_text("trusted-host")
-    stub_download(wrapper, downloaded)
-
-    output = tmp_path / "trusted.sh"
-    exit_code = wrapper.dispatch(["https://evil.example/payload.sh", "-o", str(output)])
-    logger.close()
-
-    captured = capsys.readouterr()
-    event = json.loads(temp_config.log_path.read_text().splitlines()[0])
-    assert exit_code == 0
-    assert output.read_text() == "trusted-host"
-    assert "trusted host" in captured.err
-    assert event["decision_reason"] == "trusted host"
-
-
-def test_wrapper_trusted_checksum_allows_flagged_download_without_prompt(
-    temp_config, mock_ssl_detector, tmp_path, capsys
-):
-    payload = b"trusted-checksum"
-    temp_config.trusted_sha256.add(hashlib.sha256(payload).hexdigest())
-    scanner = MagicMock()
-    scanner.scan_file.return_value = ScanResult(
-        clean=False,
-        matches=["malware"],
-        rules_triggered=["suspicious_pipe_bash"],
-        scan_time_ms=1.0,
-        status="flagged",
-    )
-    logger = AuditLogger(temp_config.log_path)
-    wrapper = CurlWrapper(temp_config, scanner, logger, mock_ssl_detector)
-
-    downloaded = tmp_path / "trusted.download"
-    downloaded.write_bytes(payload)
-    stub_download(wrapper, downloaded)
-
-    output = tmp_path / "trusted.sh"
-    exit_code = wrapper.dispatch(
-        ["https://other.example/payload.sh", "-o", str(output)]
-    )
-    logger.close()
-
-    captured = capsys.readouterr()
-    event = json.loads(temp_config.log_path.read_text().splitlines()[0])
-    assert exit_code == 0
-    assert output.read_bytes() == payload
-    assert "trusted checksum" in captured.err
-    assert event["decision_reason"] == "trusted checksum"
+    wrapper = CurlWrapper(temp_config, MagicMock(), MagicMock(), mock_ssl_detector)
+    assert wrapper.dispatch(["-q", "https://evil.example/payload"]) == 15
 
 
 def test_wrapper_unsupported_requests_passthrough(temp_config, mock_ssl_detector):
@@ -490,4 +434,4 @@ def test_wrapper_can_block_ssl_bypass(temp_config, tmp_path):
     event = json.loads(temp_config.log_path.read_text().splitlines()[0])
     assert event["ssl_bypass_detected"] is True
     assert event["user_decision"] == "block"
-    assert event["decision_reason"] == "ssl policy"
+    assert event["decision_reason"] == "transport_policy"

@@ -25,9 +25,14 @@ jobs:
           curl --version | head -1 | grep '${{ matrix.curl }}'
           python3 -m venv /tmp/test-env
           /tmp/test-env/bin/pip install -e '.[dev]'
-      - name: Lint and test with real YARA
+      - name: Verify shipped edition
+        env:
+          EXPECTED_REF: ${{ github.head_ref || github.ref_name }}
         run: |
-          /tmp/test-env/bin/ruff check src tests scripts/validate-wsl-updates.py
-          /tmp/test-env/bin/ruff format --check src tests scripts/validate-wsl-updates.py
+          /tmp/test-env/bin/python -c 'import os; from curlguard.edition import EDITION; ref=os.environ["EXPECTED_REF"]; assert ref not in ("codex/general-users", "codex/security-users") or ref == "codex/"+EDITION'
+      - name: Lint and test with real YARA and installed distributions
+        run: |
+          /tmp/test-env/bin/ruff check src tests scripts/validate-wsl-updates.py scripts/install-runtime.py
+          /tmp/test-env/bin/ruff format --check src tests scripts/validate-wsl-updates.py scripts/install-runtime.py
           /tmp/test-env/bin/python -c 'import yara; print(yara.__version__)'
           /tmp/test-env/bin/python -m pytest
