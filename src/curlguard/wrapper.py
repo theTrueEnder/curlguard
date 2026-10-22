@@ -18,7 +18,7 @@ from curlguard.arguments import parse
 from curlguard.evidence import safe_text
 from curlguard.logger import AuditEvent, redact_url
 from curlguard.policy import evaluate_findings, hash_file
-from curlguard.process import Interrupted, run
+from curlguard.process import Interrupted, TransferBudgetError, run
 from curlguard.ssl_detector import enforce_transport
 from curlguard.transfer import TransferState
 
@@ -40,11 +40,30 @@ class CurlWrapper:
     EXIT_CONFIG = 15
     EXIT_INTERNAL = 16
     EXIT_INTEGRITY = 17
+    EXIT_BUDGET = 18
 
     def __init__(self, config, scanner, logger, ssl_detector):
         self._config, self._scanner = config, scanner
         self._logger, self._ssl_detector = logger, ssl_detector
         self._state = TransferState()
+
+    def report(self, code):
+        r = self._state.request
+        return {
+            "schema_version": 1,
+            "kind": "fetch_report",
+            "source": redact_url(r.urls[0]) if r and len(r.urls) == 1 else None,
+            "effective_url": redact_url(self._state.effective_url)
+            if self._state.effective_url
+            else None,
+            "sha256": self._state.facts.get("sha256"),
+            "size": self._state.facts.get("size"),
+            "ruleset_id": getattr(self._scanner, "ruleset_id", None),
+            "evidence": self._state.evidence.public(),
+            "publisher": self._state.publisher,
+            "settings": self._config.settings(),
+            "exit_code": code,
+        }
 
     def dispatch(self, args):
         started = time.monotonic()
@@ -123,7 +142,7 @@ class CurlWrapper:
                 self._check_destination(r.destination, self._state.snapshot)
                 if r.destination and Path(r.destination).is_file():
                     # Scan an immutable staged copy, never the live destination.
-                    shutil.copyfile(r.destination, payload)
+                    self._copy_to_stage(r.destination, payload)
                 elif self._state.expected or self._config.require_sha256:
                     self._state.evidence.integrity = "missing_required"
                     self._state.decision, self._state.reason = (
@@ -159,7 +178,12 @@ class CurlWrapper:
                     decision.action,
                     decision.reason,
                 )
-                if self._state.decision == "prompt":
+                if self._state.decision == "prompt" and self._config.noninteractive:
+                    self._state.decision, self._state.reason = (
+                        "block",
+                        "noninteractive_prompt_blocked",
+                    )
+                elif self._state.decision == "prompt":
                     self._state.decision, _ = self._resolve_flagged_action(
                         scan_result=result,
                         url=redact_url(url),
@@ -215,6 +239,11 @@ class CurlWrapper:
                 user_decision=self._state.decision,
             )
             code = 0
+            return code
+        except TransferBudgetError as exc:
+            self._state.error = "transfer_budget"
+            self._state.decision, self._state.reason = "block", str(exc)
+            code = self.EXIT_BUDGET
             return code
         except subprocess.CalledProcessError as exc:
             self._state.error, self._state.reason, self._state.status = (
@@ -307,6 +336,19 @@ class CurlWrapper:
                 code = self.EXIT_INTEGRITY
                 return None, code
             self._state.evidence.integrity = "matched"
+        if self._config.publisher:
+            from curlguard.publisher import verify
+
+            self._state.publisher = verify(
+                payload, self._config.publisher, self._config.cosign_path
+            )
+            self._state.evidence.authenticity = self._state.publisher["status"]
+            if self._state.publisher["status"] != "verified":
+                self._state.decision, self._state.reason = (
+                    "block",
+                    "publisher_verification_failed",
+                )
+                return None, self.EXIT_INTEGRITY
         self._state.stage = "scan"
         result = self._scanner.scan_file(payload)
         self._state.status, self._state.rules = result.status, result.rules_triggered
@@ -417,11 +459,13 @@ class CurlWrapper:
         return path
 
     def _download_to_temp(self, args):
+        deadline = time.monotonic() + self._config.transfer_timeout_seconds
         r = self._state.request or parse(args)
         self._state.snapshot = fingerprint(r.destination) if r.destination else None
         payload = self._temp(r.destination)
         if "continue-at" in r.values and r.destination and Path(r.destination).exists():
-            shutil.copyfile(r.destination, payload)
+            # The retained prefix is part of the staged-byte budget too.
+            self._copy_to_stage(r.destination, payload, deadline=deadline)
         self._state.etag_snapshot = (
             fingerprint(r.values["etag-save"]) if "etag-save" in r.values else None
         )
@@ -447,7 +491,13 @@ class CurlWrapper:
             cmd += ["--etag-save", str(self._state.etag)]
         cmd += ["--url", r.urls[0]]
         self._state.stage = "fetch"
-        p = run(cmd, stdout=subprocess.PIPE)
+        p = run(
+            cmd,
+            stdout=subprocess.PIPE,
+            max_bytes=self._config.max_staged_bytes,
+            staged=payload,
+            deadline=deadline,
+        )
         meta, separator, self._state.writeout = (p.stdout or b"").partition(
             marker.encode()
         )
@@ -489,6 +539,19 @@ class CurlWrapper:
             if first != expected or last + 1 != size or payload.stat().st_size != size:
                 raise OSError("inconsistent resume Content-Range")
         return payload
+
+    def _copy_to_stage(self, source, payload, *, deadline=None):
+        with Path(source).open("rb") as handle, payload.open("wb") as out:
+            total = 0
+            while chunk := handle.read(
+                min(1024 * 1024, self._config.max_staged_bytes - total + 1)
+            ):
+                total += len(chunk)
+                if total > self._config.max_staged_bytes:
+                    raise TransferBudgetError("staged_byte_limit")
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TransferBudgetError("transfer_time_limit")
+                out.write(chunk)
 
     def _check_destination(self, path, snapshot):
         if path and fingerprint(path) != snapshot:

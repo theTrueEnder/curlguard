@@ -34,6 +34,11 @@ class CurlGuardConfig:
     )
     scan_timeout_seconds: int = 10
     max_scan_bytes: int = 268435456
+    max_staged_bytes: int = 1073741824
+    transfer_timeout_seconds: int = 300
+    publisher: dict | None = None
+    cosign_path: Path = field(default_factory=lambda: Path("/usr/local/bin/cosign"))
+    noninteractive: bool = False
     edition: str = EDITION
     require_sha256: bool = SECURITY
     expected_sha256: str | None = None
@@ -63,6 +68,8 @@ class CurlGuardConfig:
                 "scan_failure_mode",
                 "unsupported_policy",
                 "match_policy",
+                "max_staged_bytes",
+                "transfer_timeout_seconds",
             )
         }
 
@@ -267,6 +274,11 @@ def load_config() -> CurlGuardConfig:
         unsupported_policy=unsupported_policy,
         scan_timeout_seconds=_positive("CURLGUARD_SCAN_TIMEOUT_SECONDS", 10),
         max_scan_bytes=_positive("CURLGUARD_MAX_SCAN_BYTES", 268435456),
+        max_staged_bytes=_positive("CURLGUARD_MAX_STAGED_BYTES", 1073741824),
+        transfer_timeout_seconds=_positive("CURLGUARD_TRANSFER_TIMEOUT_SECONDS", 300),
+        cosign_path=Path(
+            os.environ.get("CURLGUARD_COSIGN_PATH", "/usr/local/bin/cosign")
+        ),
         require_sha256=_boolean("CURLGUARD_REQUIRE_SHA256", SECURITY),
         expected_sha256=sha256(expected) if expected is not None else None,
         require_https=_boolean("CURLGUARD_REQUIRE_HTTPS", strict),

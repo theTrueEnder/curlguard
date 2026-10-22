@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "fetch_report"
+    },
+    "source": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "effective_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "sha256": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "size": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "ruleset_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "evidence": {
+      "$ref": "evidence.schema.json"
+    },
+    "publisher": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "settings": {
+      "type": "object"
+    },
+    "exit_code": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "kind",
+    "source",
+    "effective_url",
+    "sha256",
+    "size",
+    "ruleset_id",
+    "evidence",
+    "publisher",
+    "settings",
+    "exit_code"
+  ],
+  "additionalProperties": false
+}

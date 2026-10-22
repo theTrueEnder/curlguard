@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "detection": {
+      "enum": [
+        "skipped",
+        "no_matches",
+        "flagged",
+        "unavailable",
+        "error"
+      ]
+    },
+    "integrity": {
+      "type": "string"
+    },
+    "authenticity": {
+      "enum": [
+        "unverified",
+        "verified",
+        "failed"
+      ]
+    },
+    "transport": {
+      "type": "object"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "decision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "detection",
+    "integrity",
+    "authenticity",
+    "transport",
+    "findings",
+    "decision",
+    "reason"
+  ],
+  "additionalProperties": false
+}

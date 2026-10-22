@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "quarantine"
+    },
+    "command": {
+      "enum": [
+        "inspect",
+        "rescan",
+        "export"
+      ]
+    },
+    "capture": {
+      "type": "object"
+    },
+    "inspection": {
+      "$ref": "scan-report.schema.json"
+    },
+    "exit_code": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "kind",
+    "command",
+    "exit_code"
+  ],
+  "additionalProperties": true
+}

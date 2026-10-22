@@ -2,3 +2,7 @@
 *.yar text eol=lf
 # Preserve pinned upstream fixtures byte-for-byte, including upstream whitespace.
 tests/fixtures/installers/*.sh -whitespace
+# Preserve signed publisher fixtures and their pinned verification material.
+tests/fixtures/publisher/artifact.txt -text
+tests/fixtures/publisher/bundle.json -text
+tests/fixtures/publisher/trusted-root.json -text

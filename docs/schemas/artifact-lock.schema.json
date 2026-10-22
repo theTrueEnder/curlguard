@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "artifact_lock"
+    },
+    "source": {
+      "type": "string",
+      "pattern": "^https?://"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "verification": {
+      "type": "object",
+      "properties": {
+        "scan_required": {
+          "const": true
+        },
+        "publisher": {
+          "type": "object",
+          "properties": {
+            "issuer": {
+              "type": "string",
+              "minLength": 1
+            },
+            "identity": {
+              "type": "string",
+              "minLength": 1
+            },
+            "bundle": {
+              "type": "string",
+              "minLength": 1
+            },
+            "trusted_root": {
+              "type": "string",
+              "minLength": 1
+            },
+            "bundle_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "trusted_root_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "issuer",
+            "identity",
+            "bundle",
+            "trusted_root",
+            "bundle_sha256",
+            "trusted_root_sha256"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "scan_required"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "kind",
+    "source",
+    "sha256",
+    "verification"
+  ],
+  "additionalProperties": false
+}

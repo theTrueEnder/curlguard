@@ -31,6 +31,12 @@ Signals are forwarded, children reaped and temporary files cleaned on catchable
 failures. SIGKILL/power loss cannot run cleanup. Logging failure does not change
 a transfer result. Quarantine failure never permits delivery.
 
+Supported transfers also have independent staged-byte and total elapsed budgets.
+See [investigation and CI workflows](investigation-and-ci.md) for their exact
+bounds, JSON report/lock schemas, offline publisher verification, local inspection
+and deliberate quarantine export. These do not execute payloads or extend
+protection to undeclared secondary downloads.
+
 ## Artifact policies and trust migration
 
 Default policy paths are `~/.curlguard/policy.json` for regular users and

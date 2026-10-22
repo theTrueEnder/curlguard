@@ -28,4 +28,5 @@ class TransferState:
     metadata: dict = field(default_factory=dict)
     expected: str | None = None
     transport_options: list[str] = field(default_factory=list)
+    publisher: dict | None = None
     evidence: Evidence = field(default_factory=Evidence)

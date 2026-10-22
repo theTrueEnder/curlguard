@@ -3,14 +3,12 @@
 import argparse
 import json
 import sys
-from urllib.parse import urlsplit
 
 from curlguard import __version__
 from curlguard.config import load_config
 from curlguard.edition import EDITION
 from curlguard.evidence import safe_text
 from curlguard.logger import AuditLogger
-from curlguard.policy import sha256
 from curlguard.process import Interrupted, cancellation
 from curlguard.quarantine import (
     format_size,
@@ -58,48 +56,43 @@ def _main() -> int:
             f"curlguard {__version__} ({config.edition})\n"
             "Linux-first staged downloads; scan findings are not proof of safety.\n"
             "Usage: curlguard fetch URL [-o PATH] [--sha256 HEX]\n"
+            "       curlguard fetch [URL] --lock FILE [--report FILE|-] [--write-lock FILE]\n"
+            "       curlguard scan PATH [--json]\n"
+            "       curlguard bootstrap MANIFEST --output-dir NEW_DIR [--json]\n"
             "       curlguard doctor [--json]\n"
             "       curlguard rules {status [--json],update}\n"
-            "       curlguard quarantine {list,inspect IDENTIFIER}\n"
+            "       curlguard quarantine {list,inspect,rescan,export} [--help]\n"
             "       curlguard <curl arguments>\n"
             "Resolved settings: " + json.dumps(config.settings(), sort_keys=True) + "\n"
             "Exit codes: 10 blocked, 11 quarantined, 12 transport, 13 scanner/rules,\n"
-            "14 unsupported, 15 configuration, 16 internal/delivery, 17 integrity.\n"
+            "14 unsupported, 15 configuration, 16 internal/delivery, 17 integrity,\n"
+            "18 transfer budget. Local scan exits 10 for findings even when allowed.\n"
             "Unsupported pass-through is unscanned. Absolute curl calls bypass this wrapper."
         )
         return 0
     if not as_curl and argv and argv[0] == "fetch":
-        parser = argparse.ArgumentParser(prog="curlguard fetch")
-        parser.add_argument("url")
-        parser.add_argument("-o", "--output")
-        parser.add_argument("--sha256", type=sha256)
-        options = parser.parse_args(argv[1:])
-        try:
-            url = urlsplit(options.url)
-            valid_url = url.scheme in {"http", "https"} and bool(url.hostname)
-        except ValueError:
-            valid_url = False
-        if not valid_url:
-            parser.error("fetch requires one HTTP/HTTPS URL with a host")
-        if options.output == "":
-            parser.error("output path must not be empty")
-        # Explicit fetch never silently falls back to an unscanned transfer.
-        config.unsupported_policy = "block"
-        if (
-            options.sha256
-            and config.expected_sha256
-            and options.sha256 != config.expected_sha256
-        ):
-            raise ValueError("command SHA-256 conflicts with CURLGUARD_EXPECTED_SHA256")
-        config.expected_sha256 = options.sha256 or config.expected_sha256
-        argv = ["--disable", "--fail", "--location", "--url", options.url]
-        if options.output:
-            argv += ["--output", options.output]
+        from curlguard.workflows import handle_fetch
+
+        return handle_fetch(argv[1:], config)
+    if not as_curl and argv and argv[0] == "bootstrap":
+        from curlguard.workflows import handle_bootstrap
+
+        return handle_bootstrap(argv[1:], config)
     scanner = YaraScanner(
         config.rules_dirs,
         timeout=config.scan_timeout_seconds,
         max_bytes=config.max_scan_bytes,
     )
+    if not as_curl and argv and argv[0] == "scan":
+        from curlguard.inspection import inspect_file
+
+        parser = argparse.ArgumentParser(prog="curlguard scan")
+        parser.add_argument("path")
+        parser.add_argument("--json", action="store_true")
+        options = parser.parse_args(argv[1:])
+        report, code = inspect_file(options.path, config, scanner)
+        _report(report, options.json)
+        return code
     if not as_curl and argv and argv[0] == "doctor":
         from curlguard.health import inspect
 
@@ -156,6 +149,13 @@ def _handle_quarantine_cli(argv: list[str]) -> int:
     inspect_parser.add_argument(
         "identifier", help="Payload name, prefix, or metadata path"
     )
+    inspect_parser.add_argument("--json", action="store_true")
+    for command in ("rescan", "export"):
+        command_parser = subparsers.add_parser(command)
+        command_parser.add_argument("identifier")
+        command_parser.add_argument("--json", action="store_true")
+        if command == "export":
+            command_parser.add_argument("destination")
 
     args = parser.parse_args(argv)
     config = load_config()
@@ -163,7 +163,21 @@ def _handle_quarantine_cli(argv: list[str]) -> int:
     if args.command == "list":
         return _quarantine_list_command(config.quarantine_dir)
     if args.command == "inspect":
+        if args.json:
+            from curlguard.quarantine import investigate
+
+            report, code = investigate(config, args.identifier, "inspect")
+            _report(report, True)
+            return code
         return _quarantine_inspect_command(config.quarantine_dir, args.identifier)
+    if args.command in {"rescan", "export"}:
+        from curlguard.quarantine import investigate
+
+        report, code = investigate(
+            config, args.identifier, args.command, getattr(args, "destination", None)
+        )
+        _report(report, args.json)
+        return code
 
     parser.print_help()
     return 0

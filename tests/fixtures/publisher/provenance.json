@@ -1,0 +1,14 @@
+{
+  "artifact.txt": {
+    "source": "https://raw.githubusercontent.com/sigstore/sigstore-conformance/e241c4ea6c83b4d8f03461e825f056b2c5eba3ed/test/assets/bundle-verify/a.txt",
+    "sha256": "a0cfc71271d6e278e57cd332ff957c3f7043fdda354c4cbb190a30d56efa01bf"
+  },
+  "bundle.json": {
+    "source": "https://raw.githubusercontent.com/sigstore/sigstore-conformance/e241c4ea6c83b4d8f03461e825f056b2c5eba3ed/test/assets/bundle-verify/happy-path-v0.3-new-mediaType/bundle.sigstore.json",
+    "sha256": "82382358bdf586d1a184820ac0d0ff06eb737f459fe03baebbbd2c76e80b54a9"
+  },
+  "trusted-root.json": {
+    "source": "https://raw.githubusercontent.com/sigstore/cosign/v3.1.3/pkg/cosign/testdata/trusted_root_pgi.json",
+    "sha256": "f44a1b88128e55ebfb62189becbc0fa48d4ec9915c65ac54ba0e46a008b12d5b"
+  }
+}

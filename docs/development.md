@@ -32,6 +32,9 @@ points, not mutually exclusive suites; select multiple rows for shared changes.
 | Remote rule updates | `test_auto_updater.py`, `test_resilience.py` |
 | Configuration, logging, quarantine, installation | `test_config.py`, `test_logger.py`, `test_resilience.py`, `test_integration.py` |
 | CLI, prompts, TLS option detection | `test_cli.py`, `test_tui.py`, `test_ssl_detector.py`, `test_integration.py` |
+| Local scan, quarantine investigation/export | `test_investigation.py`, `test_cli.py` |
+| CI reports, locks, publisher verification, bootstrap manifests | `test_workflows.py`, `test_policy.py` |
+| Staged byte and elapsed transfer budgets | `test_transfer_budgets.py`, `test_downloads.py`, `test_resilience.py` |
 
 For example: `python -m pytest tests/test_arguments.py tests/test_downloads.py`.
 The full verification commands are:
@@ -87,3 +90,18 @@ unless an explicitly gated security-only feature is added. Keep runtime imports
 pointing at the tested worktree or installed artifact when reusing development
 interpreters. See the [redesign plan](plans/security-redesign.md) and
 [follow-on use cases](plans/underserved-use-cases.md).
+
+The [investigation and CI guide](investigation-and-ci.md) documents schema contracts
+and runnable fetch-only examples. CI downloads a checksum-pinned Cosign v3.1.3
+into `/tmp`, never a live installation path; all signature tests use local bundles
+and roots. Set `CURLGUARD_TEST_COSIGN` to an isolated supported verifier to run those
+integration cases locally; they skip explicitly when absent. JSON Schema validation
+uses the development extra. Example checks:
+
+```bash
+python examples/fetch-only.py
+python examples/enforcement-boundaries.py
+```
+
+The second example requires Linux user/network namespace support, changes only
+its own isolated child namespaces, and fails explicitly if that support is absent.

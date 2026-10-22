@@ -188,7 +188,11 @@ def test_wrapper_download_to_temp_rewrites_output_flags(temp_config, mock_ssl_de
         temp_config, MagicMock(), AuditLogger(temp_config.log_path), mock_ssl_detector
     )
 
-    def fake_run(cmd, stdout=None, stderr=None):
+    def fake_run(
+        cmd, stdout=None, stderr=None, *, max_bytes=None, staged=None, deadline=None
+    ):
+        assert max_bytes == temp_config.max_staged_bytes
+        assert staged is not None and deadline is not None
         temp_path = Path(cmd[cmd.index("--output") + 1])
         temp_path.write_text("downloaded")
         assert "-o" not in cmd

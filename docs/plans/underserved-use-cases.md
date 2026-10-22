@@ -1,5 +1,13 @@
 # Underserved use cases: follow-on implementation plan
 
+Implementation status: local scan, quarantine JSON investigation/rescan/export,
+versioned fetch reports/locks with offline Cosign, independent transfer budgets,
+and fetch-only manifests are implemented. See
+[interfaces, schemas and verification](../investigation-and-ci.md) and the
+[administrator design and boundary evidence](../organizational-enforcement.md).
+Organizational enforcement remains a design with rollout gates; no privileged
+enforcement is deployed. The original scope and acceptance criteria follow.
+
 These items are follow-on work, not features claimed by the current redesign.
 Shared prerequisites delivered by that batch are staged publication, structured
 evidence, hash validation, exact artifact policies, signed rule generations and
