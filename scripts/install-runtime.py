@@ -38,7 +38,7 @@ def _install(args):
     # Copy all inputs into a private destination before invoking pip or package code.
     stage = Path(tempfile.mkdtemp(prefix=".install-", dir=prefix))
     runtime = None
-    published = False
+    publication_attempted = False
     try:
         wheels = stage / "wheels"
         wheels.mkdir(mode=0o700)
@@ -114,6 +114,7 @@ def _install(args):
             "import sys; from pathlib import Path; from curlguard.curl_manager import CurlManager; "
             "CurlManager(sys.argv[1], root=Path(sys.argv[2])).install(migrate_legacy=sys.argv[3]=='true')"
         )
+        publication_attempted = True
         subprocess.run(
             [
                 str(python),
@@ -127,12 +128,16 @@ def _install(args):
             cwd=stage,
             check=True,
         )
-        published = True
         print(f"Installed {report['edition']} runtime: {runtime}")
     finally:
         shutil.rmtree(stage)
-        if runtime and not published:
+        if runtime and not publication_attempted:
             shutil.rmtree(runtime, ignore_errors=True)
+        elif runtime and sys.exc_info()[0] is not None:
+            print(
+                f"curlguard: publication failed; candidate runtime retained: {runtime}",
+                file=sys.stderr,
+            )
 
 
 def main():

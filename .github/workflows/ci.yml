@@ -1,6 +1,30 @@
 name: Linux compatibility
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      general_ref:
+        description: General release candidate ref
+        default: origin/codex/general-users
+        required: true
+      security_ref:
+        description: Security release candidate ref
+        default: origin/codex/security-users
+        required: true
 jobs:
+  release-parity:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check synchronized release candidates
+        env:
+          GENERAL_REF: ${{ inputs.general_ref }}
+          SECURITY_REF: ${{ inputs.security_ref }}
+        run: python3 scripts/check-edition-parity.py "$GENERAL_REF" "$SECURITY_REF"
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -39,7 +63,7 @@ jobs:
         env:
           CURLGUARD_TEST_COSIGN: /tmp/cosign
         run: |
-          /tmp/test-env/bin/ruff check src tests scripts/validate-wsl-updates.py scripts/install-runtime.py
-          /tmp/test-env/bin/ruff format --check src tests scripts/validate-wsl-updates.py scripts/install-runtime.py
+          /tmp/test-env/bin/ruff check src tests scripts/validate-wsl-updates.py scripts/install-runtime.py scripts/check-edition-parity.py
+          /tmp/test-env/bin/ruff format --check src tests scripts/validate-wsl-updates.py scripts/install-runtime.py scripts/check-edition-parity.py
           /tmp/test-env/bin/python -c 'import yara; print(yara.__version__)'
           /tmp/test-env/bin/python -m pytest

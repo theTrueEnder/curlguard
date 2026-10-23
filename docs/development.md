@@ -91,6 +91,20 @@ pointing at the tested worktree or installed artifact when reusing development
 interpreters. See the [redesign plan](plans/security-redesign.md) and
 [follow-on use cases](plans/underserved-use-cases.md).
 
+Before promoting a synchronized release, run:
+
+```bash
+python scripts/check-edition-parity.py codex/general-users codex/security-users
+ruff check scripts/check-edition-parity.py
+ruff format --check scripts/check-edition-parity.py
+```
+
+This checks exact shipped defaults and permits only the edition audience paragraph
+to differ in README; all other shared files must match. CI exposes the same gate
+through manual workflow dispatch with two candidate refs. Ordinary PRs do not
+require the other branch to contain an unmerged change. Keep paired integration
+and validation work in the release checklist.
+
 The [investigation and CI guide](investigation-and-ci.md) documents schema contracts
 and runnable fetch-only examples. CI downloads a checksum-pinned Cosign v3.1.3
 into `/tmp`, never a live installation path; all signature tests use local bundles

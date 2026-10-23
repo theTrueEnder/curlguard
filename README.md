@@ -93,6 +93,24 @@ replacing the owned `curl` and `curlguard` wrappers. System wrappers live under
 wrapper/CLI executable is never silently replaced. Keep previous runtimes until
 you decide they are no longer needed.
 
+Installation prepares rollback backups before changing either wrapper and
+serializes install, uninstall, and recovery. If publication fails, the candidate
+runtime is retained whenever a wrapper might reference it. An unresolved
+transaction blocks further installation or uninstall. Use the retained runtime's
+absolute Python path and the transaction path printed by the installer:
+
+```bash
+/path/to/retained/runtime/bin/python -I -m curlguard.cli recover-install /path/to/bin/.curlguard-transaction
+```
+
+Recovery restores the previous wrappers, or removes this transaction's wrappers
+after a failed fresh install. A committed installation awaiting cleanup keeps its
+new wrappers. Recovery refuses unknown edits; preserve the journal, backups, and
+runtimes for investigation if it cannot complete. Run system recovery as root.
+Never delete a runtime while either live wrapper references it. The persistent
+`.curlguard-install.lock` file is intentional and should not be removed while
+installation or recovery may be running.
+
 Production installation does not use editable packages or global pip modifications.
 For old editable installations, remove their old console entry point only after
 checking its ownership and retaining the previous runtime. See

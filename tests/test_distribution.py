@@ -191,7 +191,9 @@ def test_candidate_failure_preserves_previous_runtime(tmp_path, fail_at):
         finally:
             restored_mask = os.umask(previous_mask)
             assert restored_mask == 0o077
-    assert list(prefix.iterdir()) == [previous]
+    remaining = list(prefix.iterdir())
+    assert previous in remaining
+    assert len(remaining) == (2 if fail_at == "publish" else 1)
     assert (previous / "sentinel").read_text() == "preserved"
     pip_calls = [c for c in calls if "pip" in c]
     assert (

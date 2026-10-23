@@ -50,6 +50,15 @@ def _main() -> int:
     if not as_curl and argv == ["--version"]:
         print(f"curlguard {__version__} ({EDITION})")
         return 0
+    if not as_curl and argv and argv[0] == "recover-install":
+        from curlguard.install_transaction import recover_install
+
+        parser = argparse.ArgumentParser(prog="curlguard recover-install")
+        parser.add_argument("transaction")
+        options = parser.parse_args(argv[1:])
+        recover_install(options.transaction)
+        print("Installation transaction resolved.")
+        return 0
     config = load_config()
     if not as_curl and (not argv or argv in (["--help"], ["-h"])):
         print(
@@ -60,6 +69,7 @@ def _main() -> int:
             "       curlguard scan PATH [--json]\n"
             "       curlguard bootstrap MANIFEST --output-dir NEW_DIR [--json]\n"
             "       curlguard doctor [--json]\n"
+            "       curlguard recover-install TRANSACTION\n"
             "       curlguard rules {status [--json],update}\n"
             "       curlguard quarantine {list,inspect,rescan,export} [--help]\n"
             "       curlguard <curl arguments>\n"
