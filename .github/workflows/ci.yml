@@ -51,7 +51,7 @@ jobs:
           /tmp/test-env/bin/pip install -e '.[dev]'
       - name: Verify shipped edition
         env:
-          EXPECTED_REF: ${{ github.head_ref || github.ref_name }}
+          EXPECTED_REF: ${{ github.base_ref || github.ref_name }}
         run: |
           /tmp/test-env/bin/python -c 'import os; from curlguard.edition import EDITION; ref=os.environ["EXPECTED_REF"]; assert ref not in ("codex/general-users", "codex/security-users") or ref == "codex/"+EDITION'
       - name: Prepare pinned offline publisher verifier
