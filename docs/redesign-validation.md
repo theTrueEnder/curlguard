@@ -1,5 +1,8 @@
 # Security redesign validation — October 16, 2026
 
+Historical report. See [October 23 mitigation validation](validation-2026-10-23-mitigation.md)
+for current installer recovery, shared workflow integration, and release status.
+
 ## Automated checks
 
 Both maintained editions were verified in WSL Ubuntu with Python 3.12.3,

@@ -1,6 +1,8 @@
 # Mitigation plan: installer recovery, edition parity, and release integration
 
-Status: proposed; implementation and remote rollout remain pending.
+Status: installer recovery and local edition integration complete; remote rollout
+pending. See [October 23 validation](../validation-2026-10-23-mitigation.md) for
+tested commits, results, artifacts, and remaining release gates.
 
 This plan addresses the three gaps identified in the repository evaluation. It
 supplements the [security redesign](security-redesign.md) and
@@ -92,12 +94,12 @@ Update the current failed-candidate test: pre-publication failures can discard t
 candidate; publication failures must favor retaining a possibly referenced
 runtime. Preserve the existing successful-rollback test.
 
-- [ ] The reproduced dangling-wrapper case is a regression test.
-- [ ] Every surviving managed wrapper references an existing validated runtime,
+- [x] The reproduced dangling-wrapper case is a regression test.
+- [x] Every surviving managed wrapper references an existing validated runtime,
       including when restoration cannot finish.
-- [ ] Recovery needs no newly allocated backup and is safe to repeat.
-- [ ] Previous destinations, unrelated files, and `/usr/bin/curl` remain intact.
-- [ ] Isolated built-wheel install, upgrade, failed upgrade, recovery, and
+- [x] Recovery needs no newly allocated backup and is safe to repeat.
+- [x] Previous destinations, unrelated files, and `/usr/bin/curl` remain intact.
+- [x] Isolated built-wheel install, upgrade, failed upgrade, recovery, and
       uninstall checks pass; unresolved recovery never reports success.
 
 ## 2. Restore shared functionality across editions — P1
@@ -118,12 +120,12 @@ that list. Shared changes should have paired integration work and validation.
 Do not make an ordinary general-branch PR depend on security already containing
 that PR's unmerged commit; enforce synchronization at promotion time.
 
-- [ ] Security exposes all intended shared investigation and reproducible-fetch
+- [x] Security exposes all intended shared investigation and reproducible-fetch
       workflows with its own resolved policy.
-- [ ] Strict defaults and explicit relaxations, including disabling mandatory
+- [x] Strict defaults and explicit relaxations, including disabling mandatory
       hashes, are tested on both editions.
-- [ ] Tree differences are limited to reviewed edition-specific content.
-- [ ] Focused tests and all mandatory checks pass independently on both refs.
+- [x] Tree differences are limited to reviewed edition-specific content.
+- [x] Focused tests and all mandatory checks pass independently on both refs.
 
 Use separate worktrees or isolated archives/environments. Verify imports come
 from the edition under test. Run the repository's complete lint, formatting, and
@@ -173,8 +175,8 @@ No PyPI upload or live machine installation is needed for these gates.
 
 - [ ] Both maintained editions are remotely available with passing hosted CI.
 - [ ] Default-branch behavior matches the agreed audience and documentation.
-- [ ] Current validation evidence identifies exact refs and remaining limitations.
-- [ ] Historical and concurrent work remains recoverable and unchanged.
+- [x] Current validation evidence identifies exact refs and remaining limitations.
+- [x] Historical and concurrent work remains recoverable and unchanged.
 
 ## Closure criteria
 
