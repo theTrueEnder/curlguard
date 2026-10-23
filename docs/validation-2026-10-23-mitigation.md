@@ -1,9 +1,9 @@
 # Mitigation validation — October 23, 2026
 
-Installer recovery and edition integration are complete locally. Remote release
-integration remains pending. This report supplements the historical
+Installer recovery, edition integration, and authorized remote release integration
+are complete. This report supplements the historical
 [October 16 redesign validation](redesign-validation.md); it does not replace its
-dated results or imply that hosted CI has run on unpublished commits.
+dated results. The published candidates also passed hosted CI as recorded below.
 
 ## Tested source commits
 
@@ -15,8 +15,8 @@ dated results or imply that hosted CI has run on unpublished commits.
 The security source commit merges general's recovery implementation and shared
 investigation/reproducible-fetch workflows. Its strict defaults remain intact.
 The parity gate passed for these refs: only `src/curlguard/edition.py` and the
-README edition-audience paragraph differ. Subsequent documentation commits do not
-change the tested implementation.
+README edition-audience paragraph differ. Subsequent documentation and CI target
+selection changes do not change the tested runtime implementation.
 
 Verification used WSL Ubuntu, Python 3.12.3, curl 8.5.0, YARA 4.5.4, Ruff 0.17.1,
 and the real offline Cosign v3.1.3 verifier. Focused installation/parity tests
@@ -33,9 +33,23 @@ ruff format --check src tests scripts/validate-wsl-updates.py scripts/install-ru
 PYTHONPATH=src CURLGUARD_TEST_COSIGN=/tmp/curlguard-cosign-v3.1.3 python -m pytest
 ```
 
-The existing Ubuntu 22.04/Python 3.10 and Ubuntu 24.04/Python 3.12 hosted matrix
-remains configured. That hosted matrix has not been run for these local candidates;
-the new manual workflow-dispatch parity job is also awaiting remote rollout.
+The Ubuntu 22.04/Python 3.10 and Ubuntu 24.04/Python 3.12 hosted matrix passed for
+both published candidates:
+
+- [General matrix](https://github.com/theTrueEnder/curlguard/actions/runs/39977565810)
+  at `173cdea476f4a809f3f19c16994ba5f85b878adc`.
+- [Security matrix](https://github.com/theTrueEnder/curlguard/actions/runs/39977564999)
+  at `09ad4d63028550ca4d9826315d88abd732724dd5`.
+- [Manual release gate](https://github.com/theTrueEnder/curlguard/actions/runs/39977594352),
+  including hosted parity against both exact published branch heads and another
+  general matrix run.
+
+CI validates a PR's destination branch when checking shipped edition identity.
+This permits shared general-to-security integration while requiring the merged
+tree to retain the security edition. Pushes continue to validate their own branch.
+The release-record update and this CI correction use the same protected PR checks;
+current results are visible in the repository's
+[Actions history](https://github.com/theTrueEnder/curlguard/actions).
 
 ## Installer failure and recovery
 
@@ -107,26 +121,34 @@ restore a saved ref into a new branch with `git fetch PATH_TO_BUNDLE
 refs/heads/NAME:refs/heads/RECOVERY_NAME`, using the exact recorded names. Do not
 overwrite current work to inspect historical commits.
 
-## Release gates still open
+## Completed remote rollout
 
 The remote default was checked before integration: `master` at
 `941beb3ba5c40b3f6b0d829493b6813439da68f1`; remote general was `804ae94`, and
-security had no remote branch. No remote refs or settings were changed in this
-implementation step. `master`, `update`, and the lightweight branch retain their
-original local heads.
+security had no remote branch. Following separate user authorization, both
+maintained branches were published in an atomic, ordinary push. The exact
+published candidates passed both hosted runtime matrices and the parity gate
+before the default changed to `codex/general-users`. `master`, `update`, and the
+lightweight branch retain their original heads; no branch was deleted or rewritten.
 
-The [mitigation plan](plans/mitigation-and-release.md) requires separately
-authorized rollout. Before declaring release integration complete:
+Both maintained branches now require the two matrix checks, an up-to-date PR
+merge, and PR-based changes. Protection applies to administrators. Force pushes
+and branch deletion are disabled. No independent reviewer approval is required;
+this preserves a usable owner-operated workflow while enforcing the CI gates.
+Release parity remains an explicit promotion gate rather than blocking ordinary
+shared development before the other edition is synchronized.
 
-1. Recheck remote heads for concurrent changes, then publish both maintained
-   branches without force pushes.
-2. Obtain green hosted matrix results on the exact published candidates and run
-   the parity gate. Configure required checks and branch protections.
-3. Make `codex/general-users` the default if that recommendation is accepted;
-   retain `master` and the other legacy branches.
-4. Verify fresh default and explicit security clones, installed edition identity,
-   and published documentation. Restore the recorded default setting if rollout
-   fails, without rewriting history.
+Fresh remote clones were verified under
+`/tmp/curlguard-rollout-clones-m4htkdj2`: an ordinary clone selected general, and
+an explicit security clone selected security. Both imported their own source,
+loaded packaged rules, classified inert positive/negative data correctly, and
+returned doctor status 0 without artifact pins. Security resolved required hashes,
+HTTPS, certificate verification, TLS 1.2, HTTPS-only redirects, and blocking scan/
+unsupported-request policies. General resolved its documented compatibility
+defaults. These complement the installed-wheel ownership and edition checks above.
 
-Items 1 and 2 of the mitigation plan are complete locally. Item 3 is prepared,
-with its remote rollout and fresh-clone acceptance checks still open.
+The pre-publication recovery snapshot is
+`.git/mitigation-recovery-2026-10-23/before-publish.bundle`. The local remote-default
+tracking ref was updated to match GitHub. Rollback remains available by restoring
+the recorded default setting and using ordinary revert commits if needed; no
+protection bypass or force push was used. All three mitigation items are closed.
