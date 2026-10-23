@@ -1,8 +1,8 @@
 # Mitigation plan: installer recovery, edition parity, and release integration
 
-Status: installer recovery and local edition integration complete; remote rollout
-pending. See [October 23 validation](../validation-2026-10-23-mitigation.md) for
-tested commits, results, artifacts, and remaining release gates.
+Status: all three mitigations complete, including authorized remote rollout.
+See [October 23 validation](../validation-2026-10-23-mitigation.md) for tested
+commits, hosted checks, artifacts, branch protections, and fresh-clone results.
 
 This plan addresses the three gaps identified in the repository evaluation. It
 supplements the [security redesign](security-redesign.md) and
@@ -143,9 +143,8 @@ legacy branch, including its unique history. Preserve `update` and the original
 lightweight branch as well. Do not merge legacy automation bypasses into the
 shared engine without a separate policy review.
 
-This is the recommended rollout choice, not an action performed by this plan.
-Actual pushing, branch protection, and default-branch changes require a separately
-authorized rollout.
+The user separately authorized this rollout on October 23. Both maintained
+branches are published and protected, and general is now the remote default.
 
 ### Preparation and rollout gates
 
@@ -173,8 +172,8 @@ default setting if necessary, and direct users to the last validated refs.
 Repair forward or use ordinary revert commits; do not rewrite published history.
 No PyPI upload or live machine installation is needed for these gates.
 
-- [ ] Both maintained editions are remotely available with passing hosted CI.
-- [ ] Default-branch behavior matches the agreed audience and documentation.
+- [x] Both maintained editions are remotely available with passing hosted CI.
+- [x] Default-branch behavior matches the agreed audience and documentation.
 - [x] Current validation evidence identifies exact refs and remaining limitations.
 - [x] Historical and concurrent work remains recoverable and unchanged.
 
