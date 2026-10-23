@@ -1,8 +1,10 @@
 """Quarantine inspection helpers for curlguard."""
 
 import json
+import os
+import tempfile
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -136,3 +138,91 @@ def _int_or_none(value) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def investigate(config, identifier, command, destination=None):
+    report, code = _investigate(config, identifier, command, destination)
+    report["exit_code"] = code
+    return report, code
+
+
+def _investigate(config, identifier, command, destination=None):
+    """Retain capture fields; append independently identified current inspections."""
+    import fcntl
+
+    from curlguard.inspection import InspectionError, inspect_file, snapshot
+    from curlguard.scanner import YaraScanner
+
+    entry = resolve_entry(config.quarantine_dir, identifier)
+    report = {"schema_version": 1, "kind": "quarantine", "command": command}
+    if entry is None:
+        return {**report, "outcome": "missing_or_ambiguous"}, 1
+    try:
+        fd = os.open(
+            str(entry.metadata_path) + ".lock",
+            os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW,
+            0o600,
+        )
+        with os.fdopen(fd, "r+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            raw = json.loads(entry.metadata_path.read_text(encoding="utf-8"))
+            expected = raw.get("sha256")
+            report.update(identifier=entry.identifier, capture=raw)
+            if command == "inspect":
+                with snapshot(entry.payload_path, config.max_scan_bytes) as (
+                    _,
+                    facts,
+                    unchanged,
+                ):
+                    if not unchanged():
+                        raise InspectionError("changed")
+                    integrity = (
+                        "unspecified"
+                        if not expected
+                        else "matched"
+                        if expected == facts["sha256"]
+                        else "mismatched"
+                    )
+                    report.update(**facts, integrity=integrity, outcome="inspected")
+                    return report, 17 if integrity == "mismatched" else 0
+            if command == "export" and not expected:
+                return {**report, "outcome": "missing_stored_digest"}, 17
+            scanner = YaraScanner(
+                config.rules_dirs,
+                timeout=config.scan_timeout_seconds,
+                max_bytes=config.max_scan_bytes,
+            )
+            result, code = inspect_file(
+                entry.payload_path,
+                config,
+                scanner,
+                destination=destination,
+                expected=expected,
+            )
+            report["inspection"] = result
+            if command == "rescan":
+                history = raw.setdefault("rescans", [])
+                if not isinstance(history, list):
+                    raise ValueError("invalid quarantine rescan history")
+                history.append(
+                    {"timestamp": datetime.now(timezone.utc).isoformat(), **result}
+                )
+                fd, name = tempfile.mkstemp(
+                    prefix=".rescan-", dir=entry.metadata_path.parent
+                )
+                try:
+                    with os.fdopen(fd, "w") as out:
+                        json.dump(raw, out, sort_keys=True)
+                        out.flush()
+                        os.fsync(out.fileno())
+                    os.replace(name, entry.metadata_path)
+                finally:
+                    Path(name).unlink(missing_ok=True)
+            return report, code
+    except InspectionError as exc:
+        return {
+            **report,
+            "outcome": exc.outcome,
+        }, 17 if exc.outcome == "changed" else 13
+    except (OSError, ValueError):
+        return {**report, "outcome": "unreadable"}, 13

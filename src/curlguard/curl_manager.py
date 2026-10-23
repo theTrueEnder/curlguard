@@ -6,7 +6,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import uuid
 from pathlib import Path
 
@@ -58,7 +57,18 @@ class CurlManager:
     def is_installed(self):
         return _owned(self._curl_path) and self._curl_real.is_file()
 
+    @property
+    def transaction(self):
+        from curlguard.install_transaction import WrapperTransaction
+
+        return WrapperTransaction(self._curl_path.parent, self._mode, self._root)
+
     def install(self, *, migrate_legacy=False):
+        with self.transaction.locked():
+            self.transaction.require_resolved()
+            self._install(migrate_legacy=migrate_legacy)
+
+    def _install(self, *, migrate_legacy=False):
         legacy = self._root / "usr/bin/curl.real"
         if self._mode == "system-wide" and legacy.exists():
             if not migrate_legacy:
@@ -91,38 +101,9 @@ class CurlManager:
             f'exec {shlex.quote(os.path.abspath(sys.executable))} -I -m curlguard.cli --as-curl "$@"\n'
         )
         cli_script = script.replace(' --as-curl "$@"', ' "$@"')
-        staged, previous = {}, {}
-        try:
-            for path, content in ((self._curl_path, script), (cli_path, cli_script)):
-                previous[path] = path.read_bytes() if path.exists() else None
-                fd, name = tempfile.mkstemp(
-                    prefix=".curlguard-install-", dir=path.parent
-                )
-                staged[path] = Path(name)
-                with os.fdopen(fd, "w") as handle:
-                    handle.write(content)
-                os.chmod(name, 0o755)
-            committed = []
-            try:
-                for path, temporary in staged.items():
-                    os.replace(temporary, path)
-                    committed.append(path)
-            except BaseException:
-                for path in committed:
-                    if previous[path] is None:
-                        path.unlink(missing_ok=True)
-                    else:
-                        fd, rollback = tempfile.mkstemp(
-                            prefix=".curlguard-rollback-", dir=path.parent
-                        )
-                        with os.fdopen(fd, "wb") as handle:
-                            handle.write(previous[path])
-                        os.chmod(rollback, 0o755)
-                        os.replace(rollback, path)
-                raise
-        finally:
-            for temporary in staged.values():
-                temporary.unlink(missing_ok=True)
+        self.transaction.publish(
+            {"curl": script.encode(), "curlguard": cli_script.encode()}
+        )
 
     def _migrate_legacy(self):
         system = self._root / "usr/bin/curl"
@@ -166,6 +147,11 @@ class CurlManager:
         legacy.unlink()
 
     def uninstall(self):
+        with self.transaction.locked():
+            self.transaction.require_resolved()
+            self._uninstall()
+
+    def _uninstall(self):
         if self._mode == "system-wide" and (self._root / "usr/bin/curl.real").exists():
             raise ValueError(
                 "legacy installation requires migration; refusing to restore stale curl.real"

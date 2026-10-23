@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "bootstrap_manifest"
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+          },
+          "role": {
+            "enum": [
+              "bootstrap",
+              "secondary"
+            ]
+          },
+          "lock": {
+            "$ref": "artifact-lock.schema.json"
+          }
+        },
+        "required": [
+          "id",
+          "role",
+          "lock"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "kind",
+    "artifacts"
+  ],
+  "additionalProperties": false
+}

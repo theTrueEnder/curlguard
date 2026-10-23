@@ -5,8 +5,8 @@ supported HTTP/HTTPS downloads, scans their bytes with YARA, evaluates transport
 and artifact policy, and publishes only after those checks finish.
 
 A scan with no matches is not proof that an artifact is safe. SHA-256 verification
-checks expected bytes; it does not authenticate a publisher. Publisher-signature
-verification is follow-on work.
+checks expected bytes; it does not authenticate a publisher. Pinned lockfiles can
+require offline Sigstore publisher verification independently of malware scanning.
 
 ## Editions
 
@@ -40,11 +40,22 @@ curlguard rules status --json
 curlguard rules update
 curlguard quarantine list
 curlguard quarantine inspect <identifier>
+curlguard scan ./artifact --json
+curlguard quarantine rescan <identifier> --json
+curlguard quarantine export <identifier> ./new-file --json
+curlguard fetch --lock artifact.lock.json --report fetch.json -o artifact
+curlguard bootstrap manifest.json --output-dir new-downloads --json
 ```
 
-`fetch` supports one URL, optional output and optional expected hash; unknown options
-are errors. It follows permitted redirects and never executes content. Do not take
+`fetch` supports one URL or a pinned lock, optional output, expected hash and JSON
+report; unknown options are errors. It blocks scan failures and would-be prompts.
+It follows permitted redirects and never executes content. Do not take
 a checksum supplied by the same compromised download as an independent trust anchor.
+
+See [investigation and CI workflows](docs/investigation-and-ci.md) for schemas,
+offline publisher verification, independent transfer budgets and fetch-only examples.
+The [administrator threat model](docs/organizational-enforcement.md) describes
+enforcement boundaries; the wrapper remains voluntary.
 
 The installed `curl` wrapper accepts the supported native argument shapes, including
 `-fsSL`, `-o`, `-O`, resume, conditional/ETag requests and common write-out fields.
@@ -81,6 +92,24 @@ replacing the owned `curl` and `curlguard` wrappers. System wrappers live under
 `/usr/local/bin`; the package-owned `/usr/bin/curl` remains untouched. An unrelated
 wrapper/CLI executable is never silently replaced. Keep previous runtimes until
 you decide they are no longer needed.
+
+Installation prepares rollback backups before changing either wrapper and
+serializes install, uninstall, and recovery. If publication fails, the candidate
+runtime is retained whenever a wrapper might reference it. An unresolved
+transaction blocks further installation or uninstall. Use the retained runtime's
+absolute Python path and the transaction path printed by the installer:
+
+```bash
+/path/to/retained/runtime/bin/python -I -m curlguard.cli recover-install /path/to/bin/.curlguard-transaction
+```
+
+Recovery restores the previous wrappers, or removes this transaction's wrappers
+after a failed fresh install. A committed installation awaiting cleanup keeps its
+new wrappers. Recovery refuses unknown edits; preserve the journal, backups, and
+runtimes for investigation if it cannot complete. Run system recovery as root.
+Never delete a runtime while either live wrapper references it. The persistent
+`.curlguard-install.lock` file is intentional and should not be removed while
+installation or recovery may be running.
 
 Production installation does not use editable packages or global pip modifications.
 For old editable installations, remove their old console entry point only after
@@ -149,6 +178,9 @@ Ordinary downloads never fetch rule updates. See
 | `CURLGUARD_UPDATE_FEED_ID` | Expected signed feed identity |
 | `CURLGUARD_UPDATE_KEYS_FILE` | Locally provisioned Ed25519 public-key file |
 | `CURLGUARD_SCAN_TIMEOUT_SECONDS` | YARA match timeout, default 10 |
+| `CURLGUARD_MAX_STAGED_BYTES` | Maximum staged file size, default 1073741824; independent of scan size |
+| `CURLGUARD_TRANSFER_TIMEOUT_SECONDS` | Total staged transfer deadline, default 300 seconds |
+| `CURLGUARD_COSIGN_PATH` | Cosign v3.1.3 for offline publisher verification, default `/usr/local/bin/cosign` |
 | `CURLGUARD_MAX_SCAN_BYTES` | Scan-size limit, default 256 MiB; not a download/disk budget |
 
 Booleans accept `true`/`false`; numeric limits must be positive. Legacy broad trust
