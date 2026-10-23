@@ -179,6 +179,12 @@ def test_cli_recovery_ignores_invalid_download_policy(tmp_path, monkeypatch):
 
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("CURLGUARD_REQUIRE_SHA256", "invalid")
+    parent = tmp_path / ".local/bin"
+    parent.mkdir(parents=True)
+    for name in NEW:
+        (parent / name).write_bytes(b"old " + name.encode())
+    transaction = WrapperTransaction(parent, "per-user", tmp_path / "isolated-distro")
+    leave_unresolved(transaction)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -187,6 +193,8 @@ def test_cli_recovery_ignores_invalid_download_policy(tmp_path, monkeypatch):
             str(tmp_path / ".local/bin/.curlguard-transaction"),
         ],
     )
+    assert main() == 0
+    assert (parent / "curl").read_bytes() == b"old curl"
     assert main() == 0
 
 
