@@ -38,7 +38,10 @@ def write_file(path, content, mode):
 
 class WrapperTransaction:
     def __init__(self, parent, mode, root):
-        self.parent, self.mode, self.root = Path(parent), mode, Path(root)
+        self.parent, self.mode = Path(parent), mode
+        # Per-user wrapper targets come from HOME, independently of the optional
+        # isolated distro root used by installer health checks.
+        self.root = Path("/") if mode == "per-user" else Path(root)
         self.directory = self.parent / ".curlguard-transaction"
 
     @contextmanager
